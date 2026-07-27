@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dive Computer Simulator</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <section id="profile-panel" class="panel">
+    <div class="graph-row">
+      <div class="axis-title-y">Depth</div>
+      <canvas id="profile-canvas"></canvas>
+    </div>
+    <div class="axis-title-x">Dive Time in Minutes</div>
+  </section>
+
+  <section id="display-panel" class="panel">
+    <div class="display-readouts">
+      <div class="readout">
+        <div class="label">Depth (m)</div>
+        <div class="value" id="depth-value">0.0</div>
+      </div>
+      <div class="readout">
+        <div class="label">Dive Time</div>
+        <div class="value" id="time-value">00:00</div>
+      </div>
+      <div class="readout">
+        <div class="label">NDL (min)</div>
+        <div class="value" id="ndl-value">--</div>
+      </div>
+    </div>
+
+    <div class="selectors">
+      <div class="selector" id="nitrox-selector">
+        <div class="label">Nitrox %</div>
+        <div class="arrow-row">
+          <button id="nitrox-down">&#9660;</button>
+          <div class="value" id="nitrox-value">21</div>
+          <button id="nitrox-up">&#9650;</button>
+        </div>
+      </div>
+
+      <div class="selector" id="altitude-selector">
+        <div class="label">Altitude</div>
+        <div class="arrow-row">
+          <button id="altitude-down">&#9660;</button>
+          <svg class="icon" id="altitude-icon" viewBox="0 0 34 20"></svg>
+          <button id="altitude-up">&#9650;</button>
+        </div>
+        <div class="value" id="altitude-value">0 m</div>
+      </div>
+
+      <div class="selector" id="gf-selector">
+        <div class="label">GF Lo/Hi</div>
+        <div class="arrow-row">
+          <button id="gf-down">&#9660;</button>
+          <svg class="icon" id="gf-icon" viewBox="0 0 34 20"></svg>
+          <button id="gf-up">&#9650;</button>
+        </div>
+        <div class="value" id="gf-value">30/70</div>
+      </div>
+    </div>
+
+    <div class="sim-controls">
+      <button id="start-btn">Start Simulation</button>
+      <div class="speed-control">
+        <span class="label">Speed</span>
+        <input type="range" id="speed-slider" min="1" max="60" value="1" step="1" />
+        <span class="value" id="speed-value">1x</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="bars-panel" class="panel">
+    <div class="label">Compartment Loading</div>
+    <div id="bars-wrap">
+      <canvas id="bars-canvas"></canvas>
+      <div id="bars-labels"></div>
+      <div id="bars-axis-legend">&lt;Fast&nbsp;&nbsp;-&nbsp;&nbsp;Tissue compartments&nbsp;&nbsp;-&nbsp;&nbsp;Slow&gt;</div>
+    </div>
+  </section>
+
+</div>
+
+<script type="module" src="ui.js"></script>
+</body>
+</html>

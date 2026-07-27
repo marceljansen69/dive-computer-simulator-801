@@ -1,0 +1,315 @@
+:root {
+  --bg: #05080c;
+  --panel-bg: #0b1118;
+  --panel-border: #1c2833;
+  --text-main: #cdeeff;
+  --text-dim: #5f7d8f;
+  --accent: #37e6c4;
+  --green: #2fd06a;
+  --amber: #e8b93a;
+  --red: #e5484d;
+  --mvalue-safe: #0a2a4a;
+  --mvalue-unsafe: #bcdfff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-main);
+  font-family: 'Courier New', Courier, monospace;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 8px;
+  padding: 8px;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+/* ---------- Shared graph axis titles ---------- */
+
+.graph-row {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 0;
+}
+
+.axis-title-y {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.axis-title-x {
+  text-align: center;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+
+/* ---------- Dive profile graph ---------- */
+
+#profile-panel {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+}
+
+#profile-canvas {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  display: block;
+  cursor: crosshair;
+}
+
+/* ---------- Computer display ---------- */
+
+#display-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.display-readouts {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.readout {
+  text-align: center;
+  flex: 1;
+}
+
+.readout .label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.readout .value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: var(--accent);
+  line-height: 1.2;
+}
+
+.selectors {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.selector {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: #060b10;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 6px 4px;
+}
+
+.selector .label {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.selector .arrow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selector button {
+  background: none;
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.9rem;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.selector button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.selector .value {
+  font-size: 1rem;
+  min-width: 3.5em;
+  text-align: center;
+}
+
+.icon {
+  width: 34px;
+  height: 20px;
+}
+
+.sim-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#start-btn {
+  background: var(--accent);
+  color: #05080c;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#start-btn:hover {
+  filter: brightness(1.1);
+}
+
+.speed-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.speed-control input[type='range'] {
+  flex: 1;
+}
+
+.speed-control .value {
+  min-width: 3em;
+  text-align: right;
+}
+
+/* ---------- Compartment bars ---------- */
+
+#bars-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+#bars-panel .label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+#bars-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  min-width: 0;
+}
+
+#bars-canvas {
+  flex: 1;
+  width: 100%;
+  display: block;
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+}
+
+#bars-labels {
+  display: flex;
+  padding-left: 56px; /* matches BARS_LEFT_PAD in ui.js */
+}
+
+#bars-labels span {
+  flex: 1;
+  text-align: center;
+  font-size: 0.6rem;
+  color: var(--text-dim);
+}
+
+#bars-axis-legend {
+  text-align: center;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  letter-spacing: 0.03em;
+}
+
+/* ---------- Layout: mobile default (stacked) ---------- */
+
+#profile-panel {
+  order: 1;
+}
+#display-panel {
+  order: 2;
+}
+#bars-panel {
+  order: 3;
+}
+
+/* ---------- Layout: desktop ---------- */
+
+@media (min-width: 900px) {
+  #app {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    grid-template-rows: minmax(260px, 45vh) 1fr;
+  }
+
+  #profile-panel {
+    grid-column: 1;
+    grid-row: 1;
+    order: initial;
+  }
+
+  #display-panel {
+    grid-column: 2;
+    grid-row: 1;
+    order: initial;
+  }
+
+  #bars-panel {
+    grid-column: 1 / span 2;
+    grid-row: 2;
+    order: initial;
+  }
+}

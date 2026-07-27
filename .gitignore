@@ -1,0 +1,6 @@
+# Microsoft Office lock files
+~$*.doc
+~$*.docx
+
+# Local Claude Code settings (machine-specific, not shared)
+.claude/settings.local.json
