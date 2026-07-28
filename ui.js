@@ -9,8 +9,17 @@ import {
   ambientPressureAtDepth,
   mValue,
   computeNDL,
+  ceilingDepth,
+  computeCeiling,
+  computeDecoStopSeconds,
+  hasSurfacingViolation,
   PAMB_0,
 } from './engine.js';
+
+const MSG_NDL_WARNING = "You're getting close to your limits, adjust the dive plan";
+const MSG_CEILING_BREACH = 'Decompression stop required';
+const MSG_DCS_RISK = 'You exceeded your limits and run an unacceptable risk of getting DCS';
+const LOCK_EPSILON = 1e-6;
 
 // ---------------------------------------------------------------------------
 // State
@@ -29,7 +38,7 @@ const state = {
 
   nitroxPercent: 21,           // UI-only for now; engine always runs on air
   altitudeIndex: 0,            // 0 / 1 / 2 -> 0m / 1500m / 3000m, placeholder only
-  gfIndex: 0,                  // 0 / 1 / 2 -> 30/70, 40/85, 50/90, placeholder only
+  gfIndex: 0,                  // 0 / 1 / 2 -> GF_PRESETS below; wired into the engine
 
   simRunning: false,
   simSpeed: 1,
@@ -44,14 +53,34 @@ const state = {
 
   dragIndex: null,
   dragMoved: false,
+
+  pauseReason: null,       // null | 'manual' | 'ndl-warning' | 'ceiling-breach'
+  ndlWarningShown: false,  // the ndl-warning pause fires at most once per dive run
+  diveFinished: false,     // true only once finishDive() has actually run
+
+  ceilingDepthRounded: 0,      // displayed/enforced stop depth, rounded up to 3m
+  decoStopSecondsRemaining: 0, // time left at the current held depth before ascent is allowed
+  previousCeiling: 0,          // unrounded ceilingDepth() from the prior whole-minute check
+  errorTriggered: false,       // sticky: a stop was left early, or the diver surfaced unsafely
+  errorTriggeredAtMinute: null, // when ERROR first fired, for accurate replay of past instants
+
+  previewTimeMinutes: null,    // non-null while scrubbing the timeline (paused-only, preview-only)
 };
 
 const ALTITUDE_PRESETS = [0, 1500, 3000];
+// Matches Shearwater/Garmin convention: GF Low/GF High as percentages.
+// Bar count increases with conservatism (fewer bars = less conservative).
 const GF_PRESETS = [
-  { label: '30/70', bars: 1 },
-  { label: '40/85', bars: 2 },
-  { label: '50/90', bars: 3 },
+  { low: 45, high: 95, bars: 1 }, // low conservatism — default
+  { low: 40, high: 85, bars: 2 }, // medium conservatism
+  { low: 35, high: 75, bars: 3 }, // high conservatism
 ];
+
+// Current GF Low/High as 0..1 fractions, for engine calls.
+function currentGF() {
+  const preset = GF_PRESETS[state.gfIndex];
+  return { low: preset.low / 100, high: preset.high / 100 };
+}
 
 // ---------------------------------------------------------------------------
 // DOM references
@@ -62,6 +91,7 @@ const profileCtx = profileCanvas.getContext('2d');
 
 const depthValueEl = document.getElementById('depth-value');
 const timeValueEl = document.getElementById('time-value');
+const ndlLabelEl = document.getElementById('ndl-label');
 const ndlValueEl = document.getElementById('ndl-value');
 
 const nitroxValueEl = document.getElementById('nitrox-value');
@@ -73,6 +103,7 @@ const gfIconEl = document.getElementById('gf-icon');
 const startBtn = document.getElementById('start-btn');
 const speedSlider = document.getElementById('speed-slider');
 const speedValueEl = document.getElementById('speed-value');
+const warningBannerEl = document.getElementById('warning-banner');
 
 const barsCanvas = document.getElementById('bars-canvas');
 const barsCtx = barsCanvas.getContext('2d');
@@ -139,6 +170,13 @@ function depthAtTime(t) {
   return wp[wp.length - 1].d;
 }
 
+// A waypoint at or before the current simulated time represents dive history
+// and can't be edited — only the remaining, not-yet-lived portion of the
+// profile is editable, whether the sim is running or paused.
+function isWaypointLocked(wp) {
+  return state.simElapsedMinutes > 0 && wp.t <= state.simElapsedMinutes + LOCK_EPSILON;
+}
+
 function drawProfile() {
   const rect = profileCanvas.getBoundingClientRect();
   const { w, h, pad } = graphSize();
@@ -200,11 +238,11 @@ function drawProfile() {
   });
   profileCtx.stroke();
 
-  // waypoint handles
+  // waypoint handles — dimmed where locked (already-lived history)
   state.waypoints.forEach((wp) => {
     const x = timeToX(wp.t);
     const y = depthToY(wp.d);
-    profileCtx.fillStyle = '#37e6c4';
+    profileCtx.fillStyle = isWaypointLocked(wp) ? '#5f7d8f' : '#37e6c4';
     profileCtx.beginPath();
     profileCtx.arc(x, y, 5, 0, Math.PI * 2);
     profileCtx.fill();
@@ -223,11 +261,32 @@ function drawProfile() {
     profileCtx.lineWidth = 1.5;
     profileCtx.stroke();
   }
+
+  // replay/preview cursor — grey, shown only while scrubbing; the white
+  // "actual dive time" cursor above stays in place so both are visible.
+  if (state.previewTimeMinutes !== null) {
+    const previewX = timeToX(state.previewTimeMinutes);
+    profileCtx.setLineDash([4, 4]);
+    profileCtx.strokeStyle = '#5f7d8f';
+    profileCtx.lineWidth = 1;
+    profileCtx.beginPath();
+    profileCtx.moveTo(previewX, pad);
+    profileCtx.lineTo(previewX, pad + h);
+    profileCtx.stroke();
+    profileCtx.setLineDash([]);
+
+    const previewY = depthToY(depthAtTime(state.previewTimeMinutes));
+    profileCtx.fillStyle = '#5f7d8f';
+    profileCtx.beginPath();
+    profileCtx.arc(previewX, previewY, 5, 0, Math.PI * 2);
+    profileCtx.fill();
+  }
 }
 
 function findWaypointNear(x, y) {
   const threshold = 10;
   for (let i = 0; i < state.waypoints.length; i++) {
+    if (isWaypointLocked(state.waypoints[i])) continue;
     const wx = timeToX(state.waypoints[i].t);
     const wy = depthToY(state.waypoints[i].d);
     if (Math.hypot(wx - x, wy - y) <= threshold) return i;
@@ -240,24 +299,62 @@ function canvasPoint(evt) {
   return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
 }
 
+// Dragging within the already-lived (locked) portion of the timeline while
+// paused scrubs a non-destructive preview instead of grabbing a waypoint —
+// that zone is otherwise dead space for mousedown (locked waypoints are
+// already unclickable), so there's no collision with waypoint editing.
+function inScrubbableZone(x) {
+  return !state.simRunning && state.simElapsedMinutes > 0 && xToTime(x) <= state.simElapsedMinutes;
+}
+
+// Hover feedback: the scrubbable timeline gets a horizontal resize cursor,
+// otherwise the default crosshair. Doesn't run while actively dragging or
+// scrubbing so it doesn't fight the cursor set for that interaction.
+profileCanvas.addEventListener('mousemove', (evt) => {
+  if (state.dragIndex !== null || state.previewTimeMinutes !== null) return;
+  const { x } = canvasPoint(evt);
+  profileCanvas.style.cursor = inScrubbableZone(x) ? 'ew-resize' : 'crosshair';
+});
+
 profileCanvas.addEventListener('mousedown', (evt) => {
   const { x, y } = canvasPoint(evt);
+  if (inScrubbableZone(x)) {
+    profileCanvas.style.cursor = 'ew-resize';
+    state.previewTimeMinutes = Math.max(0, Math.min(state.simElapsedMinutes, xToTime(x)));
+    renderPreview();
+    return;
+  }
   state.dragIndex = findWaypointNear(x, y);
   state.dragMoved = false;
 });
 
 window.addEventListener('mousemove', (evt) => {
+  if (state.previewTimeMinutes !== null) {
+    const { x } = canvasPoint(evt);
+    state.previewTimeMinutes = Math.max(0, Math.min(state.simElapsedMinutes, xToTime(x)));
+    renderPreview();
+    return;
+  }
   if (state.dragIndex === null) return;
   const { x, y } = canvasPoint(evt);
   state.dragMoved = true;
-  const t = Math.max(0, xToTime(x));
-  const d = Math.max(0, yToDepth(y));
+  const minT = state.simElapsedMinutes > 0 ? state.simElapsedMinutes + LOCK_EPSILON : 0;
+  // Snap to a 1 minute / 1 meter grid.
+  const t = Math.max(minT, Math.round(xToTime(x)));
+  const d = Math.max(0, Math.round(yToDepth(y)));
   state.waypoints[state.dragIndex] = { t, d };
   updateGraphScale();
   drawProfile();
 });
 
 window.addEventListener('mouseup', (evt) => {
+  if (state.previewTimeMinutes !== null) {
+    state.previewTimeMinutes = null;
+    updateDisplay(liveSnapshot());
+    drawBars();
+    drawProfile();
+    return;
+  }
   const { x, y } = canvasPoint(evt);
   const inCanvas =
     x >= 0 && y >= 0 && x <= profileCanvas.getBoundingClientRect().width &&
@@ -273,11 +370,14 @@ window.addEventListener('mouseup', (evt) => {
       sortWaypoints();
     }
   } else if (inCanvas) {
-    // click on empty space: add a new waypoint
-    const t = Math.max(0, xToTime(x));
-    const d = Math.max(0, yToDepth(y));
-    state.waypoints.push({ t, d });
-    sortWaypoints();
+    // click on empty space: add a new waypoint (only in the editable future),
+    // snapped to a 1 minute / 1 meter grid
+    const t = Math.max(0, Math.round(xToTime(x)));
+    const d = Math.max(0, Math.round(yToDepth(y)));
+    if (state.simElapsedMinutes === 0 || t > state.simElapsedMinutes + LOCK_EPSILON) {
+      state.waypoints.push({ t, d });
+      sortWaypoints();
+    }
   }
 
   state.dragIndex = null;
@@ -308,9 +408,11 @@ function drawAltitudeIcon() {
 function drawGfIcon() {
   const lit = GF_PRESETS[state.gfIndex].bars;
   let svg = '';
+  // i=0 is the top bar, i=2 is the bottom bar — light from the bottom up
+  // so the least-conservative preset (1 bar) highlights the lowest bar.
   for (let i = 0; i < 3; i++) {
     const y = 2 + i * 6;
-    const color = i < lit ? '#37e6c4' : '#1c2833';
+    const color = i >= 3 - lit ? '#37e6c4' : '#1c2833';
     svg += `<rect x="0" y="${y}" width="34" height="4" fill="${color}" />`;
   }
   gfIconEl.innerHTML = svg;
@@ -319,7 +421,8 @@ function drawGfIcon() {
 function refreshSelectorLabels() {
   nitroxValueEl.textContent = String(state.nitroxPercent);
   altitudeValueEl.textContent = `${ALTITUDE_PRESETS[state.altitudeIndex]} m`;
-  gfValueEl.textContent = GF_PRESETS[state.gfIndex].label;
+  const gfPreset = GF_PRESETS[state.gfIndex];
+  gfValueEl.textContent = `${gfPreset.low}/${gfPreset.high}`;
   drawAltitudeIcon();
   drawGfIcon();
 }
@@ -343,11 +446,11 @@ document.getElementById('altitude-down').addEventListener('click', () => {
 });
 
 document.getElementById('gf-up').addEventListener('click', () => {
-  state.gfIndex = Math.min(2, state.gfIndex + 1);
+  state.gfIndex = (state.gfIndex + 1) % GF_PRESETS.length;
   refreshSelectorLabels();
 });
 document.getElementById('gf-down').addEventListener('click', () => {
-  state.gfIndex = Math.max(0, state.gfIndex - 1);
+  state.gfIndex = (state.gfIndex - 1 + GF_PRESETS.length) % GF_PRESETS.length;
   refreshSelectorLabels();
 });
 
@@ -386,7 +489,7 @@ function resizeBarsCanvas() {
 const BAR_SCALE_MAX = 6; // bar of pressure represented by full bar height
 const BARS_LEFT_PAD = 56; // reserves room for the 'M-Value' / 'PN2 0.79' labels; keep in sync with #bars-labels padding-left in styles.css
 
-function drawBars() {
+function drawBars(tissues = state.tissues) {
   const rect = barsCanvas.getBoundingClientRect();
   const w = rect.width, h = rect.height;
   const plotW = w - BARS_LEFT_PAD;
@@ -398,7 +501,7 @@ function drawBars() {
   // tissue loading bars, color-coded by % of surface M-value
   for (let i = 0; i < COMPARTMENTS.length; i++) {
     const colX = BARS_LEFT_PAD + i * colWidth;
-    const pTissue = state.tissues[i];
+    const pTissue = tissues[i];
     const loadPercent = (pTissue / surfaceMValues[i]) * 100;
     const barY = h - (pTissue / BAR_SCALE_MAX) * h;
 
@@ -466,17 +569,179 @@ function formatTime(minutes) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function updateDisplay(depth) {
-  depthValueEl.textContent = depth.toFixed(1);
-  timeValueEl.textContent = formatTime(state.simElapsedMinutes);
-  ndlValueEl.textContent = state.ndl === Infinity ? '--' : String(state.ndl);
+// snapshot: { depth, minutes, ndl, ceilingDepthRounded, decoStopSecondsRemaining, errorTriggered }
+function updateDisplay(snapshot) {
+  depthValueEl.textContent = snapshot.depth.toFixed(1);
+  timeValueEl.textContent = formatTime(snapshot.minutes);
+
+  if (snapshot.errorTriggered) {
+    ndlLabelEl.textContent = '';
+    ndlValueEl.textContent = 'ERROR';
+    ndlValueEl.classList.add('blink-error');
+    ndlValueEl.classList.remove('compact-value');
+  } else if (snapshot.ceilingDepthRounded > 0) {
+    const stopMinutes = Math.ceil(snapshot.decoStopSecondsRemaining / 60);
+    ndlLabelEl.textContent = 'Ceiling / Stop';
+    ndlValueEl.textContent = `${snapshot.ceilingDepthRounded}m / ${stopMinutes}min`;
+    ndlValueEl.classList.remove('blink-error');
+    ndlValueEl.classList.add('compact-value');
+  } else {
+    ndlLabelEl.textContent = 'NDL (min)';
+    ndlValueEl.textContent = snapshot.ndl === Infinity ? '--' : String(snapshot.ndl);
+    ndlValueEl.classList.remove('blink-error', 'compact-value');
+  }
+}
+
+// The live values, exactly as currently simulated — reads existing state
+// fields directly, no recomputation.
+function liveSnapshot() {
+  return {
+    depth: depthAtTime(state.simElapsedMinutes),
+    minutes: state.simElapsedMinutes,
+    tissues: state.tissues,
+    ndl: state.ndl,
+    ceilingDepthRounded: state.ceilingDepthRounded,
+    decoStopSecondsRemaining: state.decoStopSecondsRemaining,
+    errorTriggered: state.errorTriggered,
+  };
+}
+
+// Replays tissue state from t=0 up to targetMinutes using the current
+// waypoints — pure/derived, never touches state.tissues. Used for
+// non-destructive timeline scrubbing.
+function replayTissuesTo(targetMinutes) {
+  let tissues = createCompartments(21);
+  const wholeMinutes = Math.floor(targetMinutes);
+  for (let m = 1; m <= wholeMinutes; m++) {
+    const d = depthAtTime(m);
+    tissues = stepCompartments(tissues, ambientPressureAtDepth(d), 1);
+  }
+  return tissues;
+}
+
+// Same shape as liveSnapshot(), but recomputed for an arbitrary past instant.
+function previewSnapshot(targetMinutes) {
+  const tissues = replayTissuesTo(targetMinutes);
+  const depth = depthAtTime(targetMinutes);
+  const gf = currentGF();
+  const ndl = computeNDL(tissues, depth, gf.low);
+  const { ceilingDepth: ceiling } = computeCeiling(tissues, depth, gf.low, gf.high);
+  const decoStopSecondsRemaining = ceiling > 0
+    ? computeDecoStopSeconds(tissues, ceiling, gf.low, gf.high)
+    : 0;
+  const errorTriggered = state.errorTriggeredAtMinute !== null &&
+    targetMinutes >= state.errorTriggeredAtMinute;
+
+  return {
+    depth,
+    minutes: targetMinutes,
+    tissues,
+    ndl,
+    ceilingDepthRounded: ceiling,
+    decoStopSecondsRemaining,
+    errorTriggered,
+  };
+}
+
+function renderPreview() {
+  const snapshot = previewSnapshot(state.previewTimeMinutes);
+  updateDisplay(snapshot);
+  drawBars(snapshot.tissues);
+  drawProfile();
 }
 
 function stepEngineToMinute(minute) {
   const depth = depthAtTime(minute);
   const pAmb = ambientPressureAtDepth(depth);
   state.tissues = stepCompartments(state.tissues, pAmb, 1);
-  state.ndl = computeNDL(state.tissues, depth);
+
+  const gf = currentGF();
+  state.ndl = computeNDL(state.tissues, depth, gf.low);
+
+  const { ceilingDepth: roundedCeiling } = computeCeiling(state.tissues, depth, gf.low, gf.high);
+  state.ceilingDepthRounded = roundedCeiling;
+  // Deco stop time is "how long once I hold at my required stop," not "how
+  // long from wherever I am right now" — evaluate at roundedCeiling, not at
+  // the diver's actual (possibly still-deeper) current depth. Otherwise
+  // this is always 0 until the diver has physically ascended to the stop.
+  state.decoStopSecondsRemaining = roundedCeiling > 0
+    ? computeDecoStopSeconds(state.tissues, roundedCeiling, gf.low, gf.high)
+    : 0;
+}
+
+function showWarning(message) {
+  warningBannerEl.textContent = message;
+  warningBannerEl.hidden = false;
+}
+
+function clearWarning() {
+  warningBannerEl.textContent = '';
+  warningBannerEl.hidden = true;
+}
+
+// Fixes the already-lived portion of the profile in place: inserts a
+// waypoint at the exact pause position (if one isn't already there) so a
+// later edit to a future waypoint can't reshape history.
+function pinCurrentWaypoint() {
+  const t = state.simElapsedMinutes;
+  const d = depthAtTime(t);
+  const alreadyPinned = state.waypoints.some((wp) => Math.abs(wp.t - t) < LOCK_EPSILON);
+  if (!alreadyPinned) {
+    state.waypoints.push({ t, d });
+    sortWaypoints();
+    updateGraphScale();
+  }
+}
+
+function updateStartButton() {
+  if (state.simRunning) {
+    startBtn.textContent = 'Pause';
+    startBtn.classList.remove('btn-warning');
+  } else if (state.pauseReason) {
+    // paused mid-dive — manually, or by an automatic safety pause —
+    // regardless of how close simElapsedMinutes happens to sit to the last
+    // waypoint's time (a pause can land exactly on the final minute).
+    startBtn.textContent = 'Continue Dive';
+    startBtn.classList.add('btn-warning');
+  } else {
+    startBtn.textContent = 'Start Simulation';
+    startBtn.classList.remove('btn-warning');
+  }
+}
+
+// Stops the sim loop for any reason (manual pause or an automatic safety
+// pause), fixes history in place, and surfaces the relevant warning.
+function pauseSimulation(reason) {
+  state.simRunning = false;
+  state.pauseReason = reason;
+  if (state.rafId) cancelAnimationFrame(state.rafId);
+  pinCurrentWaypoint();
+
+  if (reason === 'ndl-warning') showWarning(MSG_NDL_WARNING);
+  else if (reason === 'ceiling-breach') showWarning(MSG_CEILING_BREACH);
+  else clearWarning();
+
+  updateStartButton();
+  drawProfile();
+}
+
+function finishDive() {
+  state.simRunning = false;
+  state.pauseReason = null;
+  state.diveFinished = true;
+  updateStartButton();
+
+  const exceededLimits = hasSurfacingViolation(state.tissues);
+  if (exceededLimits) {
+    showWarning(MSG_DCS_RISK);
+    if (!state.errorTriggered) {
+      state.errorTriggered = true;
+      state.errorTriggeredAtMinute = state.simElapsedMinutes;
+    }
+  } else {
+    clearWarning();
+  }
+  updateDisplay(liveSnapshot());
 }
 
 function simulationFrame() {
@@ -493,16 +758,47 @@ function simulationFrame() {
   while (state.lastWholeMinute < wholeMinute) {
     state.lastWholeMinute++;
     stepEngineToMinute(state.lastWholeMinute);
+
+    const depthAtStep = depthAtTime(state.lastWholeMinute);
+    const gf = currentGF();
+    const ceiling = ceilingDepth(state.tissues, depthAtStep, gf.low, gf.high);
+
+    // A stop was already required last minute and the diver is now
+    // shallower than that — a required stop was left early. The first
+    // ceiling-breach of a dive (previousCeiling was still 0) just means "a
+    // stop is now required," not a violation.
+    if (state.previousCeiling > 0 && depthAtStep < state.previousCeiling) {
+      if (!state.errorTriggered) {
+        state.errorTriggered = true;
+        state.errorTriggeredAtMinute = state.lastWholeMinute;
+      }
+    }
+    state.previousCeiling = ceiling;
+
+    if (ceiling > 0 && depthAtStep < ceiling) {
+      state.simElapsedMinutes = state.lastWholeMinute;
+      updateDisplay(liveSnapshot());
+      drawBars();
+      pauseSimulation('ceiling-breach');
+      return;
+    }
+
+    if (!state.ndlWarningShown && Number.isFinite(state.ndl) && state.ndl < 3) {
+      state.ndlWarningShown = true;
+      state.simElapsedMinutes = state.lastWholeMinute;
+      updateDisplay(liveSnapshot());
+      drawBars();
+      pauseSimulation('ndl-warning');
+      return;
+    }
   }
 
-  const depth = depthAtTime(state.simElapsedMinutes);
-  updateDisplay(depth);
+  updateDisplay(liveSnapshot());
   drawBars();
   drawProfile();
 
   if (state.simElapsedMinutes >= lastWaypointTime) {
-    state.simRunning = false;
-    startBtn.textContent = 'Start Simulation';
+    finishDive();
     return;
   }
 
@@ -516,23 +812,34 @@ startBtn.addEventListener('click', () => {
   }
 
   if (state.simRunning) {
-    state.simRunning = false;
-    startBtn.textContent = 'Start Simulation';
-    if (state.rafId) cancelAnimationFrame(state.rafId);
+    pauseSimulation('manual');
     return;
   }
 
   // (Re)start / resume
-  if (state.simElapsedMinutes >= state.waypoints[state.waypoints.length - 1].t) {
+  if (state.diveFinished) {
     // previous run finished — reset
     state.simElapsedMinutes = 0;
     state.lastWholeMinute = -1;
     state.tissues = createCompartments(21);
     state.ndl = Infinity;
+    state.ndlWarningShown = false;
+    state.pauseReason = null;
+    state.diveFinished = false;
+    state.ceilingDepthRounded = 0;
+    state.decoStopSecondsRemaining = 0;
+    state.previousCeiling = 0;
+    state.errorTriggered = false;
+    state.errorTriggeredAtMinute = null;
+    clearWarning();
+  } else if (state.pauseReason) {
+    // resuming from a pause (manual, ndl-warning, or ceiling-breach)
+    state.pauseReason = null;
+    clearWarning();
   }
 
   state.simRunning = true;
-  startBtn.textContent = 'Pause';
+  updateStartButton();
   state.simElapsedAtStart = state.simElapsedMinutes;
   state.simStartReal = performance.now();
   state.rafId = requestAnimationFrame(simulationFrame);
@@ -548,4 +855,6 @@ buildBarLabels();
 refreshSelectorLabels();
 resizeProfileCanvas();
 resizeBarsCanvas();
-updateDisplay(depthAtTime(0));
+updateDisplay(liveSnapshot());
+updateStartButton();
+clearWarning();

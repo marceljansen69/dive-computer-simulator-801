@@ -128,6 +128,20 @@ body {
   line-height: 1.2;
 }
 
+.readout .value.compact-value {
+  font-size: 1.2rem;
+}
+
+.readout .value.blink-error {
+  color: var(--red);
+  animation: blink-error 1s steps(1, start) infinite;
+}
+
+@keyframes blink-error {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
 .selectors {
   display: flex;
   justify-content: space-between;
@@ -207,6 +221,11 @@ body {
   filter: brightness(1.1);
 }
 
+#start-btn.btn-warning {
+  background: var(--red);
+  color: #fff;
+}
+
 .speed-control {
   display: flex;
   align-items: center;
@@ -221,6 +240,20 @@ body {
 .speed-control .value {
   min-width: 3em;
   text-align: right;
+}
+
+#warning-banner {
+  background: #3a1414;
+  border: 1px solid var(--red);
+  color: #ffb4b4;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+#warning-banner[hidden] {
+  display: none;
 }
 
 /* ---------- Compartment bars ---------- */

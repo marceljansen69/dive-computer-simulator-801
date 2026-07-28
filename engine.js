@@ -55,43 +55,121 @@ export function mValue(pAmb, a, b) {
   return a + pAmb / b;
 }
 
-// Ceiling ambient pressure (bar) above which this compartment would be supersaturated.
-export function ceilingPressure(pTissue, a, b) {
-  return (pTissue - a) * b;
+// The single shared "how much tissue loading is allowed" function. At
+// gfNow=1 this equals the raw M-value; gfNow<1 shrinks the allowed
+// supersaturation toward pAmb (gfNow=0 means no supersaturation at all).
+// This is the one place gradient-factor math is defined — NDL, ceiling, and
+// deco-stop-time all derive from it rather than reimplementing it.
+export function getAllowedPressure(a, b, pAmb, gfNow) {
+  return pAmb + gfNow * (mValue(pAmb, a, b) - pAmb);
 }
 
-// Deepest ceiling across all compartments, expressed as ambient pressure (bar).
-export function maxCeilingPressure(pTissues) {
-  let max = -Infinity;
+// Algebraic inverse of getAllowedPressure, solved for pAmb: the ambient
+// pressure at which this compartment's GF-adjusted allowed pressure would
+// exactly equal its current tissue pressure. At gfNow=1 this reduces to the
+// original raw ceiling formula (pTissue - a) * b.
+function gfCeilingPressure(pTissue, a, b, gfNow) {
+  return (pTissue - gfNow * a) / (1 - gfNow + gfNow / b);
+}
+
+// GF_now via linear interpolation between GF Low (at the first stop depth)
+// and GF High (at the surface), based on where currentDepthMeters sits
+// between them. No stop yet (firstStopDepthMeters <= 0) means GF High.
+export function computeGFNow(currentDepthMeters, firstStopDepthMeters, gfLow, gfHigh) {
+  if (firstStopDepthMeters <= 0) return gfHigh;
+  const fraction = Math.min(1, Math.max(0, currentDepthMeters / firstStopDepthMeters));
+  return gfHigh + fraction * (gfLow - gfHigh);
+}
+
+// Deepest (controlling) GF-adjusted ceiling as an ambient pressure (bar),
+// plus which compartment controls. Two passes: GF Low alone determines
+// whether a stop exists at all and how deep the first one is; GF_now
+// (interpolated from that using currentDepthMeters) determines the actual
+// controlling ceiling used everywhere else.
+function maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh) {
+  let firstStopPressure = -Infinity;
   for (let i = 0; i < pTissues.length; i++) {
     const { a, b } = COMPARTMENTS[i];
-    const p = ceilingPressure(pTissues[i], a, b);
-    if (p > max) max = p;
+    const p = gfCeilingPressure(pTissues[i], a, b, gfLow);
+    if (p > firstStopPressure) firstStopPressure = p;
   }
-  return max;
+  const firstStopDepthMeters = Math.max(0, (firstStopPressure - 1) * 10);
+  const gfNow = computeGFNow(currentDepthMeters, firstStopDepthMeters, gfLow, gfHigh);
+
+  let maxCeilingP = -Infinity;
+  let controllingCompartmentIndex = 0;
+  for (let i = 0; i < pTissues.length; i++) {
+    const { a, b } = COMPARTMENTS[i];
+    const p = gfCeilingPressure(pTissues[i], a, b, gfNow);
+    if (p > maxCeilingP) {
+      maxCeilingP = p;
+      controllingCompartmentIndex = i;
+    }
+  }
+  return { maxCeilingP, controllingCompartmentIndex };
 }
 
-// Ceiling as a depth in meters, clamped to 0 (surface) when no stop is required.
-export function ceilingDepth(pTissues) {
-  const p = maxCeilingPressure(pTissues);
-  return Math.max(0, (p - 1) * 10);
+// Raw (unrounded) GF-adjusted ceiling depth in meters, clamped to 0.
+export function ceilingDepth(pTissues, currentDepthMeters, gfLow, gfHigh) {
+  const { maxCeilingP } = maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh);
+  return Math.max(0, (maxCeilingP - 1) * 10);
 }
 
 // Minutes remaining at the current depth before any compartment's projected
-// pressure would exceed its surface M-value. Returns Infinity if no violation
-// occurs within maxMinutes (treat as "no limit" in the UI).
-export function computeNDL(pTissues, depthMeters, maxMinutes = 999) {
+// pressure would exceed its GF-Low-adjusted allowed pressure at the surface
+// — GF_now for NDL purposes is always flat GF Low, since NDL is about when
+// a ceiling first forms, not about an ascent already in progress. Returns
+// Infinity if no violation occurs within maxMinutes (treat as "no limit").
+export function computeNDL(pTissues, depthMeters, gfLow, maxMinutes = 999) {
   const pAmb = ambientPressureAtDepth(depthMeters);
   let tissues = pTissues.slice();
 
   for (let t = 0; t <= maxMinutes; t++) {
     for (let i = 0; i < tissues.length; i++) {
       const { a, b } = COMPARTMENTS[i];
-      if (tissues[i] > mValue(PAMB_0, a, b)) {
+      if (tissues[i] > getAllowedPressure(a, b, PAMB_0, gfLow)) {
         return t;
       }
     }
     tissues = stepCompartments(tissues, pAmb, 1);
   }
   return Infinity;
+}
+
+// The controlling (deepest) mandatory decompression stop across all
+// compartments, rounded up to the next 3m increment — the depth actually
+// displayed and enforced, as opposed to the raw unrounded `ceilingDepth`.
+export function computeCeiling(pTissues, currentDepthMeters, gfLow, gfHigh) {
+  const { maxCeilingP, controllingCompartmentIndex } =
+    maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh);
+  const rawDepth = Math.max(0, (maxCeilingP - 1) * 10);
+  const ceilingDepth = rawDepth <= 0 ? 0 : Math.ceil(rawDepth / 3) * 3;
+  return { ceilingDepth, controllingCompartmentIndex };
+}
+
+// Seconds the diver must remain at heldDepthMeters before computeCeiling
+// would newly report a shallower rounded stop (0 if already clear to
+// ascend further). GF_now is re-derived each step from the evolving tissue
+// state, held at the constant heldDepthMeters. Steps forward in 1-second
+// increments for precision.
+export function computeDecoStopSeconds(pTissues, heldDepthMeters, gfLow, gfHigh, maxSeconds = 3600) {
+  const pAmb = ambientPressureAtDepth(heldDepthMeters);
+  let tissues = pTissues.slice();
+
+  if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh).ceilingDepth < heldDepthMeters) return 0;
+
+  for (let s = 1; s <= maxSeconds; s++) {
+    tissues = stepCompartments(tissues, pAmb, 1 / 60);
+    if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh).ceilingDepth < heldDepthMeters) return s;
+  }
+  return maxSeconds;
+}
+
+// True if any compartment's tissue pressure exceeds its surface M-value —
+// the final safety check at the moment the diver reaches 0m.
+export function hasSurfacingViolation(pTissues) {
+  return pTissues.some((pTissue, i) => {
+    const { a, b } = COMPARTMENTS[i];
+    return pTissue > mValue(PAMB_0, a, b);
+  });
 }
