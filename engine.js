@@ -182,10 +182,15 @@ export function ceilingDepth(pTissues, currentDepthMeters, gfLow, gfHigh, altitu
 // — GF_now for NDL purposes is always flat GF Low, since NDL is about when
 // a ceiling first forms, not about an ascent already in progress. Returns
 // Infinity if no violation occurs within maxMinutes (treat as "no limit").
+//
+// The M-value threshold is a function of TOTAL ambient pressure, not the
+// breathing gas's inert-gas fraction — nitrox only changes how fast tissues
+// load (via inspiredInertGasPressure, below), never the threshold itself.
+// altitude still shifts the surface reference; nitrox must not.
 export function computeNDL(pTissues, depthMeters, gfLow, nitroxPercent = 21, altitudeMeters = 0, maxMinutes = 999) {
   const pAmb = ambientPressureAtDepth(depthMeters, altitudeMeters);
   const inspiredPressure = inspiredInertGasPressure(pAmb, nitroxPercent);
-  const surfaceReference = inspiredInertGasPressure(surfacePressureAtAltitude(altitudeMeters), nitroxPercent);
+  const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
   let tissues = pTissues.slice();
 
   for (let t = 0; t <= maxMinutes; t++) {
@@ -234,9 +239,11 @@ export function computeDecoStopSeconds(pTissues, heldDepthMeters, gfLow, gfHigh,
 }
 
 // True if any compartment's tissue pressure exceeds its surface M-value —
-// the final safety check at the moment the diver reaches 0m.
-export function hasSurfacingViolation(pTissues, nitroxPercent = 21, altitudeMeters = 0) {
-  const surfaceReference = inspiredInertGasPressure(surfacePressureAtAltitude(altitudeMeters), nitroxPercent);
+// the final safety check at the moment the diver reaches 0m. The threshold
+// is total ambient pressure at the surface, not nitrox-scaled — see
+// computeNDL's comment for why.
+export function hasSurfacingViolation(pTissues, altitudeMeters = 0) {
+  const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
   return pTissues.some((pTissue, i) => {
     const { a, b } = COMPARTMENTS[i];
     return pTissue > mValue(surfaceReference, a, b);

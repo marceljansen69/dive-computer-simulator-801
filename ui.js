@@ -533,8 +533,14 @@ function drawBars(tissues = state.tissues) {
   barsCtx.clearRect(0, 0, w, h);
 
   const env = currentEnvironment();
-  const referencePressure = inspiredInertGasPressure(surfacePressureAtAltitude(env.altitudeMeters), env.nitroxPercent);
-  const surfaceMValues = COMPARTMENTS.map(({ a, b }) => mValue(referencePressure, a, b));
+  // The M-value threshold tracks total ambient pressure at the surface, not
+  // the breathing gas's inert-gas fraction (nitrox changes loading, not the
+  // threshold) — matches computeNDL's corrected surfaceReference.
+  const surfaceAmbient = surfacePressureAtAltitude(env.altitudeMeters);
+  const surfaceMValues = COMPARTMENTS.map(({ a, b }) => mValue(surfaceAmbient, a, b));
+  // Real atmospheric PPN2 at the surface — always air's fraction, since you
+  // return to breathing atmosphere regardless of what gas you dove on.
+  const surfacePN2 = inspiredInertGasPressure(surfaceAmbient, 21);
 
   // tissue loading bars, color-coded by % of surface M-value
   for (let i = 0; i < COMPARTMENTS.length; i++) {
@@ -571,8 +577,9 @@ function drawBars(tissues = state.tissues) {
     barsCtx.fill();
   });
 
-  // fixed surface inert-gas reference pressure line (PN2), tracks nitrox/altitude
-  const pAmbY = h - (referencePressure / BAR_SCALE_MAX) * h;
+  // atmospheric surface PN2 reference line — informational only, distinct
+  // from the M-value threshold above
+  const pAmbY = h - (surfacePN2 / BAR_SCALE_MAX) * h;
   barsCtx.setLineDash([4, 4]);
   barsCtx.strokeStyle = '#ffffff';
   barsCtx.lineWidth = 1;
@@ -589,7 +596,7 @@ function drawBars(tissues = state.tissues) {
   barsCtx.fillStyle = '#bcdfff';
   barsCtx.fillText('M-Value', 2, mValueLabelY);
   barsCtx.fillStyle = '#ffffff';
-  barsCtx.fillText(`PN2 ${referencePressure.toFixed(2)}`, 2, pAmbY);
+  barsCtx.fillText(`PN2 ${surfacePN2.toFixed(2)}`, 2, pAmbY);
 }
 
 function compartmentCenterX(i, colWidth) {
@@ -785,7 +792,7 @@ function finishDive() {
   updateStartButton();
 
   const env = currentEnvironment();
-  const exceededLimits = hasSurfacingViolation(state.tissues, env.nitroxPercent, env.altitudeMeters);
+  const exceededLimits = hasSurfacingViolation(state.tissues, env.altitudeMeters);
   if (exceededLimits) {
     showWarning(MSG_DCS_RISK);
     if (!state.errorTriggered) {
