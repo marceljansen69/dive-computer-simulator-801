@@ -43,8 +43,12 @@ const state = {
   waypoints: [
     { t: 0, d: 0 },
     { t: 5, d: 18 },
-    { t: 25, d: 18 },
-    { t: 30, d: 0 },
+    { t: 15, d: 18 },
+    { t: 19, d: 11 },  // multilevel: shallower second level extends no-deco time
+    { t: 42, d: 11 },
+    { t: 46, d: 5 },
+    { t: 49, d: 5 },   // 3-minute safety stop at 5m before surfacing
+    { t: 50, d: 0 },
   ],
   maxTime: 60,   // graph horizontal scale, auto-grows
   maxDepth: 40,  // graph vertical scale, auto-grows
