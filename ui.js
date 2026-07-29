@@ -142,7 +142,8 @@ const gfIconEl = document.getElementById('gf-icon');
 const startBtn = document.getElementById('start-btn');
 const speedSlider = document.getElementById('speed-slider');
 const speedValueEl = document.getElementById('speed-value');
-const warningBannerEl = document.getElementById('warning-banner');
+const logListEl = document.getElementById('log-list');
+const logBoxEl = document.getElementById('log-box');
 
 const barsCanvas = document.getElementById('bars-canvas');
 const barsCtx = barsCanvas.getContext('2d');
@@ -777,14 +778,20 @@ function stepEngineToMinute(minute) {
     : Math.max(0, SAFETY_STOP_SECONDS - (minute - state.safetyStopEnteredAtMinute) * 60);
 }
 
+// Appends a new line to the warning/instruction log — never replaces the
+// previous one, so the user can scroll up to check past entries for this
+// dive run. Cleared only on a full dive-run reset (see the start-button
+// click handler), not on every pause/resume/clean-finish.
 function showWarning(message) {
-  warningBannerEl.textContent = message;
-  warningBannerEl.hidden = false;
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.textContent = message;
+  logListEl.appendChild(entry);
+  logBoxEl.scrollTop = logBoxEl.scrollHeight;
 }
 
 function clearWarning() {
-  warningBannerEl.textContent = '';
-  warningBannerEl.hidden = true;
+  logListEl.innerHTML = '';
 }
 
 // Fixes the already-lived portion of the profile in place: inserts a
@@ -827,7 +834,6 @@ function pauseSimulation(reason) {
 
   if (reason === 'ndl-warning') showWarning(MSG_NDL_WARNING);
   else if (reason === 'ceiling-breach') showWarning(MSG_CEILING_BREACH);
-  else clearWarning();
 
   updateStartButton();
   drawProfile();
@@ -851,8 +857,6 @@ function finishDive() {
     // Advisory only — surfacing before the countdown completes doesn't
     // trigger ERROR or count as a DCS risk, just a habit reminder.
     showWarning(MSG_SAFETY_STOP_SKIPPED);
-  } else {
-    clearWarning();
   }
   updateDisplay(liveSnapshot());
 }
@@ -953,9 +957,9 @@ startBtn.addEventListener('click', () => {
     state.safetyStopSecondsRemaining = null;
     clearWarning();
   } else if (state.pauseReason) {
-    // resuming from a pause (manual, ndl-warning, or ceiling-breach)
+    // resuming from a pause (manual, ndl-warning, or ceiling-breach) — the
+    // log is left as-is; only a full dive-run reset clears it.
     state.pauseReason = null;
-    clearWarning();
   }
 
   state.simRunning = true;

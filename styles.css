@@ -242,26 +242,46 @@ body {
   text-align: right;
 }
 
-#warning-banner {
-  background: #3a1414;
-  border: 1px solid var(--red);
-  color: #ffb4b4;
+/* ---------- Controls box (start/pause + speed, and the warning/log area) ---------- */
+
+#controls-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#log-box {
+  height: calc(1.3em * 5 + 16px); /* fixed to ~5 lines; older entries scroll */
+  overflow-y: auto;
+  background: #060b10;
+  border: 1px solid var(--panel-border);
   border-radius: 4px;
   padding: 8px 10px;
   font-size: 0.8rem;
-  text-align: center;
+  line-height: 1.3em;
 }
 
-#warning-banner[hidden] {
-  display: none;
+.log-entry {
+  color: #ffb4b4;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(229, 72, 77, 0.15);
+}
+
+.log-entry:last-child {
+  border-bottom: none;
 }
 
 /* ---------- Compartment bars ---------- */
 
 #bars-panel {
-  flex: 1;
   display: flex;
   flex-direction: column;
+  /* No flex-grow here (on mobile #app is a flex column) — otherwise this
+     panel stretches to fill all leftover viewport height, leaving a big
+     empty gap above the drawn bars. min-height keeps it comfortably sized
+     without over-stretching; ignored by the desktop grid layout below,
+     which sizes this panel via its own grid row instead. */
+  min-height: 260px;
 }
 
 #bars-panel .label {
@@ -315,8 +335,11 @@ body {
 #display-panel {
   order: 2;
 }
-#bars-panel {
+#controls-panel {
   order: 3;
+}
+#bars-panel {
+  order: 4;
 }
 
 /* ---------- Layout: desktop ---------- */
@@ -325,12 +348,12 @@ body {
   #app {
     display: grid;
     grid-template-columns: 1.4fr 1fr;
-    grid-template-rows: minmax(260px, 45vh) 1fr;
+    grid-template-rows: minmax(260px, 45vh) auto 1fr;
   }
 
   #profile-panel {
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 1 / span 2;
     order: initial;
   }
 
@@ -340,9 +363,16 @@ body {
     order: initial;
   }
 
-  #bars-panel {
-    grid-column: 1 / span 2;
+  #controls-panel {
+    grid-column: 2;
     grid-row: 2;
     order: initial;
+  }
+
+  #bars-panel {
+    grid-column: 1 / span 2;
+    grid-row: 3;
+    order: initial;
+    min-height: 0; /* the mobile min-height would otherwise fight the grid row's own sizing */
   }
 }
