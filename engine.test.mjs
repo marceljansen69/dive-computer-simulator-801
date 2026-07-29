@@ -14,6 +14,10 @@ import {
   computeCeiling,
   computeDecoStopSeconds,
   hasSurfacingViolation,
+  surfacePressureAtAltitude,
+  n2Fraction,
+  inspiredInertGasPressure,
+  PAMB_0,
 } from './engine.js';
 
 // GF 100/100 is not a selectable preset in the UI, but it's the reference
@@ -134,14 +138,18 @@ function check(name, condition) {
   const secondsRemaining = computeDecoStopSeconds(tissues, stopDepth, GF_100, GF_100);
   check('deco stop time is positive when a stop is required', secondsRemaining > 0);
 
-  const pAmbStop = ambientPressureAtDepth(stopDepth);
-  const tissuesJustBefore = stepCompartments(tissues, pAmbStop, (secondsRemaining - 1) / 60);
+  // computeDecoStopSeconds now steps tissues internally using
+  // inspiredInertGasPressure (nitroxPercent defaults to 21/air), not raw
+  // ambient pressure — the manual replication below must match that
+  // convention or it's comparing against a different physical model.
+  const inspiredPAmbStop = inspiredInertGasPressure(ambientPressureAtDepth(stopDepth), 21);
+  const tissuesJustBefore = stepCompartments(tissues, inspiredPAmbStop, (secondsRemaining - 1) / 60);
   check(
     'ceiling has not yet cleared one second before the stop time elapses',
     computeCeiling(tissuesJustBefore, stopDepth, GF_100, GF_100).ceilingDepth === stopDepth
   );
 
-  const tissuesAtClear = stepCompartments(tissues, pAmbStop, secondsRemaining / 60);
+  const tissuesAtClear = stepCompartments(tissues, inspiredPAmbStop, secondsRemaining / 60);
   check(
     'ceiling clears to a shallower value exactly when the stop time elapses',
     computeCeiling(tissuesAtClear, stopDepth, GF_100, GF_100).ceilingDepth < stopDepth
@@ -225,6 +233,51 @@ function check(name, condition) {
   const ceilingGF45 = computeCeiling(tissues, depth, 0.45, 0.95).ceilingDepth;
   const ceilingGF35 = computeCeiling(tissues, depth, 0.35, 0.75).ceilingDepth;
   check('ceiling at GF 35/75 is never shallower than at GF 45/95', ceilingGF35 >= ceilingGF45);
+}
+
+// 12. Altitude pressure formula: sanity + the three preset values + monotonic.
+{
+  check('surfacePressureAtAltitude(0) is exactly 1 bar', surfacePressureAtAltitude(0) === 1);
+  check('surfacePressureAtAltitude(1500) ≈ 0.834 bar',
+    Math.abs(surfacePressureAtAltitude(1500) - 0.834) < 0.001);
+  check('surfacePressureAtAltitude(3000) ≈ 0.692 bar',
+    Math.abs(surfacePressureAtAltitude(3000) - 0.692) < 0.001);
+  check('surface pressure decreases monotonically with altitude',
+    surfacePressureAtAltitude(3000) < surfacePressureAtAltitude(1500) &&
+    surfacePressureAtAltitude(1500) < surfacePressureAtAltitude(0));
+}
+
+// 13. n2Fraction / inspiredInertGasPressure sanity, incl. the PAMB_0 equivalence.
+{
+  check('n2Fraction(21) is 0.79 (air)', n2Fraction(21) === 0.79);
+  check('inspiredInertGasPressure at sea level on air equals the old PAMB_0 constant',
+    Math.abs(inspiredInertGasPressure(surfacePressureAtAltitude(0), 21) - PAMB_0) < 1e-9);
+}
+
+// 14. Backward-compat equivalence: defaults must reproduce pre-change behavior exactly.
+{
+  check('createCompartments() with no args still gives 0.79 (unchanged)',
+    createCompartments().every((p) => p === 0.79));
+  check('ambientPressureAtDepth(30) with no altitude arg is still 4 (unchanged)',
+    ambientPressureAtDepth(30) === 4);
+}
+
+// 15. Nitrox: less inert gas loading, never-shorter NDL, for the same profile.
+{
+  const depth = 30, minutes = 15;
+  const air = stepCompartments(createCompartments(21), inspiredInertGasPressure(ambientPressureAtDepth(depth), 21), minutes);
+  const ean32 = stepCompartments(createCompartments(32), inspiredInertGasPressure(ambientPressureAtDepth(depth), 32), minutes);
+  check('EAN32 loads less N2 than air for the same depth/time (compartment 1)', ean32[0] < air[0]);
+  check('NDL on EAN32 is never shorter than on air, same depth',
+    computeNDL(createCompartments(32), depth, 0.45, 32) >= computeNDL(createCompartments(21), depth, 0.45, 21));
+}
+
+// 16. Altitude: lower surface reference makes NDL never longer than sea level.
+{
+  const depth = 30;
+  const seaLevelNDL = computeNDL(createCompartments(21, 0), depth, 0.45, 21, 0);
+  const altitudeNDL = computeNDL(createCompartments(21, 3000), depth, 0.45, 21, 3000);
+  check('NDL at 3000m is never longer than at sea level, same depth/gas', altitudeNDL <= seaLevelNDL);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

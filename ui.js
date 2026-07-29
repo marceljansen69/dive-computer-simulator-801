@@ -7,19 +7,26 @@ import {
   createCompartments,
   stepCompartments,
   ambientPressureAtDepth,
+  surfacePressureAtAltitude,
+  inspiredInertGasPressure,
   mValue,
   computeNDL,
   ceilingDepth,
   computeCeiling,
   computeDecoStopSeconds,
   hasSurfacingViolation,
-  PAMB_0,
 } from './engine.js';
 
 const MSG_NDL_WARNING = "You're getting close to your limits, adjust the dive plan";
 const MSG_CEILING_BREACH = 'Decompression stop required';
 const MSG_DCS_RISK = 'You exceeded your limits and run an unacceptable risk of getting DCS';
 const LOCK_EPSILON = 1e-6;
+
+// DIAGNOSTIC FLAG — set true to log a full per-compartment ceiling
+// breakdown (see engine.js's maxCeilingPressureWithGF) once per simulated
+// minute, for investigating deco-stop-sequence issues. Must be false in
+// normal use — leave off unless actively debugging.
+const DEBUG_DECO = false;
 
 // ---------------------------------------------------------------------------
 // State
@@ -47,7 +54,7 @@ const state = {
   lastWholeMinute: -1,   // last integer minute the engine has processed
   simElapsedMinutes: 0,
 
-  tissues: createCompartments(21),
+  tissues: createCompartments(),
   ndl: Infinity,
   rafId: null,
 
@@ -80,6 +87,24 @@ const GF_PRESETS = [
 function currentGF() {
   const preset = GF_PRESETS[state.gfIndex];
   return { low: preset.low / 100, high: preset.high / 100 };
+}
+
+// Current gas/altitude, for engine calls. Locked once a dive starts (see
+// the arrow-button handlers below) — unlike GF, which stays live-adjustable.
+function currentEnvironment() {
+  return { nitroxPercent: state.nitroxPercent, altitudeMeters: ALTITUDE_PRESETS[state.altitudeIndex] };
+}
+
+// The depth fed into the engine's GF_now interpolation must never be
+// shallower than the last known controlling ceiling. Without this, an
+// ascent that overshoots a required stop within a single simulated minute
+// (or a scrub/replay of one) makes GF_now relax toward GF High as if the
+// diver were already safely shallow, producing an artificially shallow
+// ceiling and a deco-stop-time that can never actually be satisfied from
+// the real tissue load (root cause of the "jumps to a shallow stop with
+// inflated time" bug, diagnosed against the 30m/25min test dive).
+function gfAnchorDepth(actualDepth, previousCeiling) {
+  return Math.max(actualDepth, previousCeiling);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,22 +452,33 @@ function refreshSelectorLabels() {
   drawGfIcon();
 }
 
+// Nitrox and altitude are locked once a dive starts — you can't change your
+// gas or teleport to a different altitude mid-dive. Selectable again only
+// after a full reset, same as before the dive started.
 document.getElementById('nitrox-up').addEventListener('click', () => {
+  if (state.simElapsedMinutes > 0) return;
   state.nitroxPercent = Math.min(50, state.nitroxPercent + 1);
   refreshSelectorLabels();
+  drawBars();
 });
 document.getElementById('nitrox-down').addEventListener('click', () => {
+  if (state.simElapsedMinutes > 0) return;
   state.nitroxPercent = Math.max(21, state.nitroxPercent - 1);
   refreshSelectorLabels();
+  drawBars();
 });
 
 document.getElementById('altitude-up').addEventListener('click', () => {
+  if (state.simElapsedMinutes > 0) return;
   state.altitudeIndex = Math.min(2, state.altitudeIndex + 1);
   refreshSelectorLabels();
+  drawBars();
 });
 document.getElementById('altitude-down').addEventListener('click', () => {
+  if (state.simElapsedMinutes > 0) return;
   state.altitudeIndex = Math.max(0, state.altitudeIndex - 1);
   refreshSelectorLabels();
+  drawBars();
 });
 
 document.getElementById('gf-up').addEventListener('click', () => {
@@ -496,7 +532,9 @@ function drawBars(tissues = state.tissues) {
   const colWidth = plotW / COMPARTMENTS.length;
   barsCtx.clearRect(0, 0, w, h);
 
-  const surfaceMValues = COMPARTMENTS.map(({ a, b }) => mValue(PAMB_0, a, b));
+  const env = currentEnvironment();
+  const referencePressure = inspiredInertGasPressure(surfacePressureAtAltitude(env.altitudeMeters), env.nitroxPercent);
+  const surfaceMValues = COMPARTMENTS.map(({ a, b }) => mValue(referencePressure, a, b));
 
   // tissue loading bars, color-coded by % of surface M-value
   for (let i = 0; i < COMPARTMENTS.length; i++) {
@@ -533,8 +571,8 @@ function drawBars(tissues = state.tissues) {
     barsCtx.fill();
   });
 
-  // fixed surface ambient pressure line (PN2 0.79)
-  const pAmbY = h - (PAMB_0 / BAR_SCALE_MAX) * h;
+  // fixed surface inert-gas reference pressure line (PN2), tracks nitrox/altitude
+  const pAmbY = h - (referencePressure / BAR_SCALE_MAX) * h;
   barsCtx.setLineDash([4, 4]);
   barsCtx.strokeStyle = '#ffffff';
   barsCtx.lineWidth = 1;
@@ -551,7 +589,7 @@ function drawBars(tissues = state.tissues) {
   barsCtx.fillStyle = '#bcdfff';
   barsCtx.fillText('M-Value', 2, mValueLabelY);
   barsCtx.fillStyle = '#ffffff';
-  barsCtx.fillText('PN2 0.79', 2, pAmbY);
+  barsCtx.fillText(`PN2 ${referencePressure.toFixed(2)}`, 2, pAmbY);
 }
 
 function compartmentCenterX(i, colWidth) {
@@ -608,26 +646,36 @@ function liveSnapshot() {
 
 // Replays tissue state from t=0 up to targetMinutes using the current
 // waypoints — pure/derived, never touches state.tissues. Used for
-// non-destructive timeline scrubbing.
+// non-destructive timeline scrubbing. Also tracks the same rolling ceiling
+// anchor the live simulation would have accumulated by that point (see
+// gfAnchorDepth), so a replayed instant reports the same ceiling the live
+// sim did/would, rather than recomputing GF_now from a bare replayed depth.
 function replayTissuesTo(targetMinutes) {
-  let tissues = createCompartments(21);
+  const env = currentEnvironment();
+  let tissues = createCompartments(env.nitroxPercent, env.altitudeMeters);
+  let previousCeiling = 0;
+  const gf = currentGF();
   const wholeMinutes = Math.floor(targetMinutes);
   for (let m = 1; m <= wholeMinutes; m++) {
     const d = depthAtTime(m);
-    tissues = stepCompartments(tissues, ambientPressureAtDepth(d), 1);
+    const pAmb = ambientPressureAtDepth(d, env.altitudeMeters);
+    tissues = stepCompartments(tissues, inspiredInertGasPressure(pAmb, env.nitroxPercent), 1);
+    previousCeiling = ceilingDepth(tissues, gfAnchorDepth(d, previousCeiling), gf.low, gf.high, env.altitudeMeters);
   }
-  return tissues;
+  return { tissues, previousCeiling };
 }
 
 // Same shape as liveSnapshot(), but recomputed for an arbitrary past instant.
 function previewSnapshot(targetMinutes) {
-  const tissues = replayTissuesTo(targetMinutes);
+  const { tissues, previousCeiling } = replayTissuesTo(targetMinutes);
   const depth = depthAtTime(targetMinutes);
   const gf = currentGF();
-  const ndl = computeNDL(tissues, depth, gf.low);
-  const { ceilingDepth: ceiling } = computeCeiling(tissues, depth, gf.low, gf.high);
+  const env = currentEnvironment();
+  const ndl = computeNDL(tissues, depth, gf.low, env.nitroxPercent, env.altitudeMeters);
+  const gfDepth = gfAnchorDepth(depth, previousCeiling);
+  const { ceilingDepth: ceiling } = computeCeiling(tissues, gfDepth, gf.low, gf.high, env.altitudeMeters);
   const decoStopSecondsRemaining = ceiling > 0
-    ? computeDecoStopSeconds(tissues, ceiling, gf.low, gf.high)
+    ? computeDecoStopSeconds(tissues, ceiling, gf.low, gf.high, env.nitroxPercent, env.altitudeMeters)
     : 0;
   const errorTriggered = state.errorTriggeredAtMinute !== null &&
     targetMinutes >= state.errorTriggeredAtMinute;
@@ -652,20 +700,25 @@ function renderPreview() {
 
 function stepEngineToMinute(minute) {
   const depth = depthAtTime(minute);
-  const pAmb = ambientPressureAtDepth(depth);
-  state.tissues = stepCompartments(state.tissues, pAmb, 1);
+  const env = currentEnvironment();
+  const pAmb = ambientPressureAtDepth(depth, env.altitudeMeters);
+  state.tissues = stepCompartments(state.tissues, inspiredInertGasPressure(pAmb, env.nitroxPercent), 1);
 
   const gf = currentGF();
-  state.ndl = computeNDL(state.tissues, depth, gf.low);
+  state.ndl = computeNDL(state.tissues, depth, gf.low, env.nitroxPercent, env.altitudeMeters);
 
-  const { ceilingDepth: roundedCeiling } = computeCeiling(state.tissues, depth, gf.low, gf.high);
+  // TEMPORARY DIAGNOSTIC: DEBUG_DECO gates the verbose per-compartment log
+  // in engine.js. Only set true for the ad-hoc diagnostic test run.
+  const debugLabel = DEBUG_DECO ? `t=${minute}min depth=${depth.toFixed(2)}m` : null;
+  const gfDepth = gfAnchorDepth(depth, state.previousCeiling);
+  const { ceilingDepth: roundedCeiling } = computeCeiling(state.tissues, gfDepth, gf.low, gf.high, env.altitudeMeters, debugLabel);
   state.ceilingDepthRounded = roundedCeiling;
   // Deco stop time is "how long once I hold at my required stop," not "how
   // long from wherever I am right now" — evaluate at roundedCeiling, not at
   // the diver's actual (possibly still-deeper) current depth. Otherwise
   // this is always 0 until the diver has physically ascended to the stop.
   state.decoStopSecondsRemaining = roundedCeiling > 0
-    ? computeDecoStopSeconds(state.tissues, roundedCeiling, gf.low, gf.high)
+    ? computeDecoStopSeconds(state.tissues, roundedCeiling, gf.low, gf.high, env.nitroxPercent, env.altitudeMeters)
     : 0;
 }
 
@@ -731,7 +784,8 @@ function finishDive() {
   state.diveFinished = true;
   updateStartButton();
 
-  const exceededLimits = hasSurfacingViolation(state.tissues);
+  const env = currentEnvironment();
+  const exceededLimits = hasSurfacingViolation(state.tissues, env.nitroxPercent, env.altitudeMeters);
   if (exceededLimits) {
     showWarning(MSG_DCS_RISK);
     if (!state.errorTriggered) {
@@ -761,7 +815,10 @@ function simulationFrame() {
 
     const depthAtStep = depthAtTime(state.lastWholeMinute);
     const gf = currentGF();
-    const ceiling = ceilingDepth(state.tissues, depthAtStep, gf.low, gf.high);
+    const env = currentEnvironment();
+    // previousCeiling is read as the anchor BEFORE being overwritten below —
+    // see gfAnchorDepth's doc comment for why the anchor is needed here.
+    const ceiling = ceilingDepth(state.tissues, gfAnchorDepth(depthAtStep, state.previousCeiling), gf.low, gf.high, env.altitudeMeters);
 
     // A stop was already required last minute and the diver is now
     // shallower than that — a required stop was left early. The first
@@ -821,7 +878,8 @@ startBtn.addEventListener('click', () => {
     // previous run finished — reset
     state.simElapsedMinutes = 0;
     state.lastWholeMinute = -1;
-    state.tissues = createCompartments(21);
+    const env = currentEnvironment();
+    state.tissues = createCompartments(env.nitroxPercent, env.altitudeMeters);
     state.ndl = Infinity;
     state.ndlWarningShown = false;
     state.pauseReason = null;
