@@ -20,7 +20,13 @@ import {
 const MSG_NDL_WARNING = "You're getting close to your limits, adjust the dive plan";
 const MSG_CEILING_BREACH = 'Decompression stop required';
 const MSG_DCS_RISK = 'You exceeded your limits and run an unacceptable risk of getting DCS';
+const MSG_SAFETY_STOP_SKIPPED = "You surfaced before completing your 3-minute safety stop at 5m — it's a strongly recommended habit on every dive";
 const LOCK_EPSILON = 1e-6;
+
+// Safety stop: advisory only, unlike the mandatory decompression ceiling —
+// real dive computers show a countdown but never force the diver to comply.
+const SAFETY_STOP_ZONE_DEPTH = 6; // meters; shallower than this arms the reminder
+const SAFETY_STOP_SECONDS = 180;  // 3 minutes
 
 // DIAGNOSTIC FLAG — set true to log a full per-compartment ceiling
 // breakdown (see engine.js's maxCeilingPressureWithGF) once per simulated
@@ -70,6 +76,10 @@ const state = {
   previousCeiling: 0,          // unrounded ceilingDepth() from the prior whole-minute check
   errorTriggered: false,       // sticky: a stop was left early, or the diver surfaced unsafely
   errorTriggeredAtMinute: null, // when ERROR first fired, for accurate replay of past instants
+
+  hasDescendedPastSafetyZone: false, // armed once the diver has been deeper than SAFETY_STOP_ZONE_DEPTH
+  safetyStopEnteredAtMinute: null,   // timestamp of the most recent continuous zone entry
+  safetyStopSecondsRemaining: null,  // null when not in the zone; counts down from SAFETY_STOP_SECONDS
 
   previewTimeMinutes: null,    // non-null while scrubbing the timeline (paused-only, preview-only)
 };
@@ -630,6 +640,13 @@ function updateDisplay(snapshot) {
     ndlValueEl.textContent = `${snapshot.ceilingDepthRounded}m / ${stopMinutes}min`;
     ndlValueEl.classList.remove('blink-error');
     ndlValueEl.classList.add('compact-value');
+  } else if (snapshot.safetyStopSecondsRemaining !== null) {
+    ndlLabelEl.textContent = 'Safety Stop';
+    ndlValueEl.textContent = snapshot.safetyStopSecondsRemaining > 0
+      ? String(Math.ceil(snapshot.safetyStopSecondsRemaining / 60))
+      : '--';
+    ndlValueEl.classList.remove('blink-error');
+    ndlValueEl.classList.add('compact-value');
   } else {
     ndlLabelEl.textContent = 'NDL (min)';
     ndlValueEl.textContent = snapshot.ndl > 99 ? '--' : String(snapshot.ndl);
@@ -648,6 +665,7 @@ function liveSnapshot() {
     ceilingDepthRounded: state.ceilingDepthRounded,
     decoStopSecondsRemaining: state.decoStopSecondsRemaining,
     errorTriggered: state.errorTriggered,
+    safetyStopSecondsRemaining: state.safetyStopSecondsRemaining,
   };
 }
 
@@ -661,6 +679,8 @@ function replayTissuesTo(targetMinutes) {
   const env = currentEnvironment();
   let tissues = createCompartments(env.nitroxPercent, env.altitudeMeters);
   let previousCeiling = 0;
+  let hasDescendedPastSafetyZone = false;
+  let safetyStopEnteredAtMinute = null;
   const gf = currentGF();
   const wholeMinutes = Math.floor(targetMinutes);
   for (let m = 1; m <= wholeMinutes; m++) {
@@ -668,13 +688,20 @@ function replayTissuesTo(targetMinutes) {
     const pAmb = ambientPressureAtDepth(d, env.altitudeMeters);
     tissues = stepCompartments(tissues, inspiredInertGasPressure(pAmb, env.nitroxPercent), 1);
     previousCeiling = ceilingDepth(tissues, gfAnchorDepth(d, previousCeiling), gf.low, gf.high, env.altitudeMeters);
+
+    if (d > SAFETY_STOP_ZONE_DEPTH) {
+      hasDescendedPastSafetyZone = true;
+      safetyStopEnteredAtMinute = null;
+    } else if (hasDescendedPastSafetyZone && safetyStopEnteredAtMinute === null) {
+      safetyStopEnteredAtMinute = m;
+    }
   }
-  return { tissues, previousCeiling };
+  return { tissues, previousCeiling, safetyStopEnteredAtMinute };
 }
 
 // Same shape as liveSnapshot(), but recomputed for an arbitrary past instant.
 function previewSnapshot(targetMinutes) {
-  const { tissues, previousCeiling } = replayTissuesTo(targetMinutes);
+  const { tissues, previousCeiling, safetyStopEnteredAtMinute } = replayTissuesTo(targetMinutes);
   const depth = depthAtTime(targetMinutes);
   const gf = currentGF();
   const env = currentEnvironment();
@@ -686,6 +713,9 @@ function previewSnapshot(targetMinutes) {
     : 0;
   const errorTriggered = state.errorTriggeredAtMinute !== null &&
     targetMinutes >= state.errorTriggeredAtMinute;
+  const safetyStopSecondsRemaining = safetyStopEnteredAtMinute === null
+    ? null
+    : Math.max(0, SAFETY_STOP_SECONDS - (targetMinutes - safetyStopEnteredAtMinute) * 60);
 
   return {
     depth,
@@ -695,6 +725,7 @@ function previewSnapshot(targetMinutes) {
     ceilingDepthRounded: ceiling,
     decoStopSecondsRemaining,
     errorTriggered,
+    safetyStopSecondsRemaining,
   };
 }
 
@@ -727,6 +758,19 @@ function stepEngineToMinute(minute) {
   state.decoStopSecondsRemaining = roundedCeiling > 0
     ? computeDecoStopSeconds(state.tissues, roundedCeiling, gf.low, gf.high, env.nitroxPercent, env.altitudeMeters)
     : 0;
+
+  // Advisory safety stop (3 min at ~5m) — unlike the ceiling above, this is
+  // never enforced, just tracked for display. Re-entering the zone after
+  // descending back out restarts the countdown from scratch.
+  if (depth > SAFETY_STOP_ZONE_DEPTH) {
+    state.hasDescendedPastSafetyZone = true;
+    state.safetyStopEnteredAtMinute = null;
+  } else if (state.hasDescendedPastSafetyZone && state.safetyStopEnteredAtMinute === null) {
+    state.safetyStopEnteredAtMinute = minute;
+  }
+  state.safetyStopSecondsRemaining = state.safetyStopEnteredAtMinute === null
+    ? null
+    : Math.max(0, SAFETY_STOP_SECONDS - (minute - state.safetyStopEnteredAtMinute) * 60);
 }
 
 function showWarning(message) {
@@ -799,6 +843,10 @@ function finishDive() {
       state.errorTriggered = true;
       state.errorTriggeredAtMinute = state.simElapsedMinutes;
     }
+  } else if (state.safetyStopEnteredAtMinute !== null && state.safetyStopSecondsRemaining > 0) {
+    // Advisory only — surfacing before the countdown completes doesn't
+    // trigger ERROR or count as a DCS risk, just a habit reminder.
+    showWarning(MSG_SAFETY_STOP_SKIPPED);
   } else {
     clearWarning();
   }
@@ -896,6 +944,9 @@ startBtn.addEventListener('click', () => {
     state.previousCeiling = 0;
     state.errorTriggered = false;
     state.errorTriggeredAtMinute = null;
+    state.hasDescendedPastSafetyZone = false;
+    state.safetyStopEnteredAtMinute = null;
+    state.safetyStopSecondsRemaining = null;
     clearWarning();
   } else if (state.pauseReason) {
     // resuming from a pause (manual, ndl-warning, or ceiling-breach)
