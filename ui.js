@@ -632,7 +632,7 @@ function updateDisplay(snapshot) {
     ndlValueEl.classList.add('compact-value');
   } else {
     ndlLabelEl.textContent = 'NDL (min)';
-    ndlValueEl.textContent = snapshot.ndl === Infinity ? '--' : String(snapshot.ndl);
+    ndlValueEl.textContent = snapshot.ndl > 99 ? '--' : String(snapshot.ndl);
     ndlValueEl.classList.remove('blink-error', 'compact-value');
   }
 }
