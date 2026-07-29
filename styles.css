@@ -99,8 +99,49 @@ body {
 
 #display-panel {
   display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+
+.display-main {
+  display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Ascent rate bar ---------- */
+
+#ascent-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 26px;
+  flex-shrink: 0;
+}
+
+.ascent-box {
+  flex: 1;
+  min-height: 8px;
+  border-radius: 2px;
+  background: var(--bg);
+  border: 1px solid var(--text-dim);
+}
+
+.ascent-box.lit-green {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.ascent-box.lit-amber {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+
+.ascent-box.lit-red {
+  background: var(--red);
+  border-color: var(--red);
 }
 
 .display-readouts {

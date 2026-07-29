@@ -21,12 +21,17 @@ const MSG_NDL_WARNING = "You're getting close to your limits, adjust the dive pl
 const MSG_CEILING_BREACH = 'Decompression stop required';
 const MSG_DCS_RISK = 'You exceeded your limits and run an unacceptable risk of getting DCS';
 const MSG_SAFETY_STOP_SKIPPED = "You surfaced before completing your 3-minute safety stop at 5m — it's a strongly recommended habit on every dive";
+const MSG_ASCENT_RATE_EXCEEDED = 'Ascent rate exceeded';
 const LOCK_EPSILON = 1e-6;
 
 // Safety stop: advisory only, unlike the mandatory decompression ceiling —
 // real dive computers show a countdown but never force the diver to comply.
 const SAFETY_STOP_ZONE_DEPTH = 6; // meters; shallower than this arms the reminder
 const SAFETY_STOP_SECONDS = 180;  // 3 minutes
+
+// Ascent rate warning threshold (m/min) — deliberately a different, lower
+// cutoff than the bar's own top level (18 m/min); per explicit spec.
+const ASCENT_RATE_WARNING_THRESHOLD = 9;
 
 // DIAGNOSTIC FLAG — set true to log a full per-compartment ceiling
 // breakdown (see engine.js's maxCeilingPressureWithGF) once per simulated
@@ -85,6 +90,12 @@ const state = {
   safetyStopEnteredAtMinute: null,   // timestamp of the most recent continuous zone entry
   safetyStopSecondsRemaining: null,  // null when not in the zone; counts down from SAFETY_STOP_SECONDS
 
+  ascentRateBarLevel: 0,       // live bar level (0-9), drops back down as the ascent rate drops
+  maxAscentRateBarLevel: 0,    // session high-water mark, shown once the dive finishes
+  ascentRateWarningShown: false, // the ascent-rate warning fires at most once per dive run
+
+  hasBeenUnderwater: false, // armed once depth > 0; the first return to 0m after this ends the dive
+
   previewTimeMinutes: null,    // non-null while scrubbing the timeline (paused-only, preview-only)
 };
 
@@ -132,6 +143,7 @@ const depthValueEl = document.getElementById('depth-value');
 const timeValueEl = document.getElementById('time-value');
 const ndlLabelEl = document.getElementById('ndl-label');
 const ndlValueEl = document.getElementById('ndl-value');
+const ascentBoxEls = Array.from(document.querySelectorAll('#ascent-bar .ascent-box'));
 
 const nitroxValueEl = document.getElementById('nitrox-value');
 const altitudeValueEl = document.getElementById('altitude-value');
@@ -173,6 +185,19 @@ function updateGraphScale() {
   state.maxDepth = Math.max(40, maxD + 8);
 }
 
+// The plotted dive must always end at the surface. Checked right before
+// actually running the simulation (fresh start, reset, or resume) rather
+// than continuously while editing, so the user can freely shape the future
+// portion of the profile without the graph fighting them mid-edit.
+function ensureLastWaypointAtSurface() {
+  const lastWp = state.waypoints[state.waypoints.length - 1];
+  if (lastWp.d !== 0) {
+    state.waypoints.push({ t: lastWp.t, d: 0 });
+    sortWaypoints();
+    updateGraphScale();
+  }
+}
+
 function graphSize() {
   const rect = profileCanvas.getBoundingClientRect();
   const pad = 24;
@@ -208,6 +233,28 @@ function depthAtTime(t) {
     }
   }
   return wp[wp.length - 1].d;
+}
+
+// Ascent rate, meters/minute, straight from the dive profile — completely
+// independent of tissue/engine state, per explicit spec ("do not influence
+// NDL or any other values"). Positive means ascending; descending or flat
+// gives 0 or negative, both treated as "not ascending".
+function ascentRateAtMinute(minute) {
+  return depthAtTime(minute - 1) - depthAtTime(minute);
+}
+
+// Ascent-rate bar level (0-9) for a given rate, m/min. 0 = not ascending.
+function ascentRateBarLevel(metersPerMinute) {
+  if (metersPerMinute <= 0) return 0;
+  if (metersPerMinute < 4) return 1;
+  if (metersPerMinute < 5) return 2;
+  if (metersPerMinute < 6) return 3;
+  if (metersPerMinute < 7) return 4;
+  if (metersPerMinute < 8) return 5;
+  if (metersPerMinute < 9) return 6;
+  if (metersPerMinute < 10) return 7;
+  if (metersPerMinute <= 10) return 8;
+  return 9;
 }
 
 // A waypoint at or before the current simulated time represents dive history
@@ -379,8 +426,18 @@ window.addEventListener('mousemove', (evt) => {
   const { x, y } = canvasPoint(evt);
   state.dragMoved = true;
   const minT = state.simElapsedMinutes > 0 ? state.simElapsedMinutes + LOCK_EPSILON : 0;
+  // A dragged point can never cross its neighbors in time — the array
+  // isn't re-sorted until mouseup, so index-adjacent lookups here are
+  // stable for the whole gesture. Without this, dragging a point past its
+  // previous neighbor reorders the profile out from under the user (the
+  // diver would effectively "go back in time"). The last point has no
+  // next neighbor, so it stays free to extend the dive as far as wanted.
+  const prevWp = state.waypoints[state.dragIndex - 1];
+  const nextWp = state.waypoints[state.dragIndex + 1];
+  const lowerBound = prevWp ? Math.max(minT, prevWp.t + 1) : minT;
+  const upperBound = nextWp ? nextWp.t - 1 : Infinity;
   // Snap to a 1 minute / 1 meter grid.
-  const t = Math.max(minT, Math.round(xToTime(x)));
+  const t = Math.min(upperBound, Math.max(lowerBound, Math.round(xToTime(x))));
   const d = Math.max(0, Math.round(yToDepth(y)));
   state.waypoints[state.dragIndex] = { t, d };
   updateGraphScale();
@@ -657,6 +714,22 @@ function updateDisplay(snapshot) {
     ndlValueEl.textContent = snapshot.ndl > 99 ? '--' : String(snapshot.ndl);
     ndlValueEl.classList.remove('blink-error', 'compact-value');
   }
+
+  updateAscentBar(snapshot.ascentRateBarLevel);
+}
+
+// Lights ascent-rate boxes 1..level (green 1-3, amber 4-6, red 7-9);
+// anything above `level` falls back to the default grey (inactive) box.
+function updateAscentBar(level) {
+  ascentBoxEls.forEach((el) => {
+    const boxLevel = Number(el.dataset.level);
+    el.classList.remove('lit-green', 'lit-amber', 'lit-red');
+    if (boxLevel <= level) {
+      if (boxLevel <= 3) el.classList.add('lit-green');
+      else if (boxLevel <= 6) el.classList.add('lit-amber');
+      else el.classList.add('lit-red');
+    }
+  });
 }
 
 // The live values, exactly as currently simulated — reads existing state
@@ -671,6 +744,10 @@ function liveSnapshot() {
     decoStopSecondsRemaining: state.decoStopSecondsRemaining,
     errorTriggered: state.errorTriggered,
     safetyStopSecondsRemaining: state.safetyStopSecondsRemaining,
+    // Live while the dive is running, but frozen to the session-high mark
+    // once finished — otherwise it'd show empty right as the dive ends,
+    // since the diver is no longer ascending at that point.
+    ascentRateBarLevel: state.diveFinished ? state.maxAscentRateBarLevel : state.ascentRateBarLevel,
   };
 }
 
@@ -721,6 +798,9 @@ function previewSnapshot(targetMinutes) {
   const safetyStopSecondsRemaining = safetyStopEnteredAtMinute === null
     ? null
     : Math.max(0, SAFETY_STOP_SECONDS - (targetMinutes - safetyStopEnteredAtMinute) * 60);
+  // Scrubbing always shows the live rate at that instant, not a session
+  // max — the frozen-at-finish behavior only applies to the real live view.
+  const ascentBarLevel = ascentRateBarLevel(ascentRateAtMinute(Math.floor(targetMinutes)));
 
   return {
     depth,
@@ -731,6 +811,7 @@ function previewSnapshot(targetMinutes) {
     decoStopSecondsRemaining,
     errorTriggered,
     safetyStopSecondsRemaining,
+    ascentRateBarLevel: ascentBarLevel,
   };
 }
 
@@ -776,6 +857,19 @@ function stepEngineToMinute(minute) {
   state.safetyStopSecondsRemaining = state.safetyStopEnteredAtMinute === null
     ? null
     : Math.max(0, SAFETY_STOP_SECONDS - (minute - state.safetyStopEnteredAtMinute) * 60);
+
+  // Ascent rate bar — purely a profile-slope check, independent of tissues/
+  // engine state. Live: drops back down as the rate drops; the session-high
+  // mark is tracked separately for the post-dive summary display.
+  const ascentRate = ascentRateAtMinute(minute);
+  state.ascentRateBarLevel = ascentRateBarLevel(ascentRate);
+  if (state.ascentRateBarLevel > state.maxAscentRateBarLevel) {
+    state.maxAscentRateBarLevel = state.ascentRateBarLevel;
+  }
+  if (ascentRate > ASCENT_RATE_WARNING_THRESHOLD && !state.ascentRateWarningShown) {
+    state.ascentRateWarningShown = true;
+    showWarning(MSG_ASCENT_RATE_EXCEEDED);
+  }
 }
 
 // Appends a new line to the warning/instruction log — never replaces the
@@ -877,6 +971,9 @@ function simulationFrame() {
     stepEngineToMinute(state.lastWholeMinute);
 
     const depthAtStep = depthAtTime(state.lastWholeMinute);
+    if (depthAtStep > 0) {
+      state.hasBeenUnderwater = true;
+    }
     const gf = currentGF();
     const env = currentEnvironment();
     // previousCeiling is read as the anchor BEFORE being overwritten below —
@@ -911,6 +1008,18 @@ function simulationFrame() {
       pauseSimulation('ndl-warning');
       return;
     }
+
+    // The first return to the surface ends the dive right here — any
+    // waypoints plotted after this point in time (e.g. a profile that dips
+    // down again after surfacing) are simply never reached.
+    if (state.hasBeenUnderwater && depthAtStep <= 0) {
+      state.simElapsedMinutes = state.lastWholeMinute;
+      updateDisplay(liveSnapshot());
+      drawBars();
+      drawProfile();
+      finishDive();
+      return;
+    }
   }
 
   updateDisplay(liveSnapshot());
@@ -936,6 +1045,11 @@ startBtn.addEventListener('click', () => {
     return;
   }
 
+  // First check before actually running: the plotted dive must end at the
+  // surface, adding a point if the user didn't finish there themselves.
+  ensureLastWaypointAtSurface();
+  drawProfile();
+
   // (Re)start / resume
   if (state.diveFinished) {
     // previous run finished — reset
@@ -955,6 +1069,10 @@ startBtn.addEventListener('click', () => {
     state.hasDescendedPastSafetyZone = false;
     state.safetyStopEnteredAtMinute = null;
     state.safetyStopSecondsRemaining = null;
+    state.ascentRateBarLevel = 0;
+    state.maxAscentRateBarLevel = 0;
+    state.ascentRateWarningShown = false;
+    state.hasBeenUnderwater = false;
     clearWarning();
   } else if (state.pauseReason) {
     // resuming from a pause (manual, ndl-warning, or ceiling-breach) — the
