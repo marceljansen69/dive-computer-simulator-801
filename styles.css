@@ -91,6 +91,11 @@ body {
   flex: 1;
   width: 100%;
   min-width: 0;
+  /* Canvas is a replaced element -- flex items default to an automatic
+     min-height equal to their intrinsic (attribute-set) size, which blocks
+     flex:1 from ever shrinking it below whatever size ui.js last set via
+     resizeProfileCanvas(). min-height:0 removes that floor. */
+  min-height: 0;
   display: block;
   cursor: crosshair;
 }
@@ -388,6 +393,8 @@ body {
 #bars-canvas {
   flex: 1;
   width: 100%;
+  /* Same replaced-element flex-shrink floor as #profile-canvas above. */
+  min-height: 0;
   display: block;
   border: 1px solid var(--panel-border);
   border-radius: 2px;
@@ -431,10 +438,27 @@ body {
 /* ---------- Layout: desktop ---------- */
 
 @media (min-width: 900px) {
+  /* Everything must fit within one screen -- a real (not just min-) height
+     on body/#app is what lets the grid's 1fr/vh rows below actually size
+     against the viewport instead of ballooning to their content's natural
+     size (which is what was happening before: #app had no definite height,
+     so the bars-panel row and its canvas grew arbitrarily large). */
+  body {
+    height: 100vh;
+    overflow: hidden;
+  }
+
   #app {
     display: grid;
     grid-template-columns: 1.4fr 1fr;
-    grid-template-rows: minmax(260px, 45vh) auto 1fr;
+    /* Row 2 was `auto` -- but profile-panel spans rows 1-2, and whenever
+       row 1's 45vh cap left profile-panel wanting more height than that,
+       the grid dumped the shortfall into row 2 (auto can still grow),
+       inflating controls-panel/log-box far past their actual content
+       and eating into the bars-panel row. A capped range bounds it to
+       what the controls box actually needs. */
+    grid-template-rows: minmax(260px, 45vh) minmax(150px, 190px) 1fr;
+    height: 100vh;
   }
 
   #profile-panel {
@@ -447,6 +471,20 @@ body {
     grid-column: 2;
     grid-row: 1;
     order: initial;
+    /* Don't stretch to fill the tall row1 (shared with the profile graph)
+       -- size to its own content+margin instead (see .display-main below)
+       and sit centered in the leftover vertical space. */
+    align-self: center;
+  }
+
+  /* Hugs its own content instead of being stretched tall by #display-panel's
+     grid row -- the added margin is the "more top/bottom margin" requested,
+     bringing the box to roughly 150% of its bare content height. #ascent-bar
+     stays on the default flex `align-items: stretch` (see #display-panel's
+     base rule), so it matches this height automatically. */
+  .display-main {
+    align-self: flex-start;
+    margin: 32px 0;
   }
 
   #controls-panel {
@@ -460,5 +498,12 @@ body {
     grid-row: 3;
     order: initial;
     min-height: 0; /* the mobile min-height would otherwise fight the grid row's own sizing */
+  }
+
+  #bars-wrap {
+    /* Lower than the mobile floor (180px) so the now-properly-computed 1fr
+       row (see body/#app above) can shrink this panel on shorter desktop
+       viewports without being forced into overflow by this floor. */
+    min-height: 120px;
   }
 }
