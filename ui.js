@@ -30,6 +30,11 @@ const MSG_CEILING_BREACH = 'Decompression stop required';
 const MSG_DCS_RISK = 'You exceeded your limits and run an unacceptable risk of getting DCS';
 const MSG_SAFETY_STOP_SKIPPED = "You surfaced before completing your 3-minute safety stop at 5m — it's a strongly recommended habit on every dive";
 const MSG_ASCENT_RATE_EXCEEDED = 'Ascent rate exceeded';
+const MSG_DIVE_START = 'Dive start';
+const MSG_DIVE_END = 'Dive end';
+const MSG_SURFACE_INTERVAL_START = 'Surface interval start';
+const MSG_ERROR_LOCKED = 'You skipped a mandatory decompression stop. Your computer is locked for 24 hours';
+const MSG_LOCKED_PROMPT = 'Your computer is locked. Please RESET to start again.';
 const LOCK_EPSILON = 1e-6;
 
 // Safety stop: advisory only, unlike the mandatory decompression ceiling —
@@ -935,10 +940,10 @@ function stepEngineToMinute(minute) {
   }
 }
 
-// Appends a new line to the warning/instruction log — never replaces the
-// previous one, so the user can scroll up to check past entries for this
-// dive run. Cleared only on a full dive-run reset (see the start-button
-// click handler), not on every pause/resume/clean-finish.
+// Appends a new line to the notification log — never replaces the previous
+// one, so the user can scroll up through the full history of an entire
+// multi-dive session (dive/interval lifecycle events plus warnings).
+// Cleared only by resetAll(), not by any dive/interval transition.
 function showWarning(message) {
   const entry = document.createElement('div');
   entry.className = 'log-entry';
@@ -1002,8 +1007,8 @@ function pauseRun(reason) {
 }
 
 // Resumes from 'dive-paused'/'interval-paused' back to the matching
-// running phase. The warning log is left as-is — only a full dive-run
-// reset (enterNextDivePlanning/resetAll) clears it.
+// running phase. The notification log is left as-is — it persists across
+// an entire multi-dive session and is only cleared by resetAll().
 function resumeRun() {
   const wasIntervalPause = state.phase === 'interval-paused';
   state.pauseReason = null;
@@ -1025,6 +1030,9 @@ function startRun(mode) {
     // the surface, adding a point if the user didn't finish there themselves.
     ensureLastWaypointAtSurface();
     drawProfile();
+    showWarning(MSG_DIVE_START);
+  } else {
+    showWarning(MSG_SURFACE_INTERVAL_START);
   }
   state.phase = mode === 'dive' ? 'diving' : 'interval-running';
   updatePrimaryButton();
@@ -1048,7 +1056,7 @@ function enterIntervalPlanning() {
 
 // Resets every per-run flag to a clean slate — shared by
 // enterNextDivePlanning() and resetAll(), which differ only in whether
-// tissues/waypoints also get reset.
+// tissues/waypoints/the notification log also get reset.
 function resetPerRunFlags() {
   state.simElapsedMinutes = 0;
   state.lastWholeMinute = -1;
@@ -1067,7 +1075,6 @@ function resetPerRunFlags() {
   state.maxAscentRateBarLevel = 0;
   state.ascentRateWarningShown = false;
   state.hasBeenUnderwater = false;
-  clearWarning();
 }
 
 // From 'interval-complete': plan the next dive. Does NOT reset tissues —
@@ -1090,6 +1097,7 @@ function enterNextDivePlanning() {
 function resetAll() {
   if (state.rafId) cancelAnimationFrame(state.rafId);
   resetPerRunFlags();
+  clearWarning();
   state.waypoints = DEFAULT_DIVE_WAYPOINTS.map((wp) => ({ ...wp }));
   state.tissues = createCompartments(state.nitroxPercent, 0);
   updateGraphScale();
@@ -1112,6 +1120,7 @@ function finishRun() {
 
   state.phase = 'dive-complete';
   updatePrimaryButton();
+  showWarning(MSG_DIVE_END);
 
   const env = currentEnvironment();
   const exceededLimits = hasSurfacingViolation(state.tissues, env.altitudeMeters);
@@ -1120,6 +1129,7 @@ function finishRun() {
     if (!state.errorTriggered) {
       state.errorTriggered = true;
       state.errorTriggeredAtMinute = state.simElapsedMinutes;
+      showWarning(MSG_ERROR_LOCKED);
     }
   } else if (state.safetyStopEnteredAtMinute !== null && state.safetyStopSecondsRemaining > 0) {
     // Advisory only — surfacing before the countdown completes doesn't
@@ -1172,6 +1182,7 @@ function simulationFrame() {
         if (!state.errorTriggered) {
           state.errorTriggered = true;
           state.errorTriggeredAtMinute = state.lastWholeMinute;
+          showWarning(MSG_ERROR_LOCKED);
         }
       }
       state.previousCeiling = ceiling;
@@ -1225,6 +1236,12 @@ function simulationFrame() {
 // Dispatches on the current phase — the one place deciding what the
 // primary button actually does, driven entirely by state.phase.
 function onPrimaryButtonClick() {
+  // Once ERROR has fired, the computer is locked — Reset is the only way
+  // out, matching a real dive computer after a skipped mandatory stop.
+  if (state.errorTriggered) {
+    showWarning(MSG_LOCKED_PROMPT);
+    return;
+  }
   if (state.waypoints.length < 2) {
     alert('Add at least two waypoints to the dive profile before starting.');
     return;
