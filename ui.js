@@ -20,7 +20,6 @@ const {
   createCompartments,
   stepCompartments,
   computeNDL,
-  ceilingDepth,
   computeCeiling,
   computeDecoStopSeconds,
   hasSurfacingViolation,
@@ -48,22 +47,28 @@ const ASCENT_RATE_WARNING_THRESHOLD = ACTIVE_COMPUTER.ascentRate.warningThreshol
 // normal use — leave off unless actively debugging.
 const DEBUG_DECO = false;
 
+// Default dive-planning profile — used both at page load and whenever
+// "Next Dive" starts a fresh planning phase. Copied fresh (never referenced
+// directly) so in-place mutation of state.waypoints (push/splice) never
+// corrupts this default.
+const DEFAULT_DIVE_WAYPOINTS = [
+  { t: 0, d: 0 },
+  { t: 5, d: 18 },
+  { t: 15, d: 18 },
+  { t: 19, d: 11 },  // multilevel: shallower second level extends no-deco time
+  { t: 42, d: 11 },
+  { t: 46, d: 5 },
+  { t: 49, d: 5 },   // 3-minute safety stop at 5m before surfacing
+  { t: 50, d: 0 },
+];
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 const state = {
   // Dive profile waypoints, sorted by time. {t: minutes, d: meters}
-  waypoints: [
-    { t: 0, d: 0 },
-    { t: 5, d: 18 },
-    { t: 15, d: 18 },
-    { t: 19, d: 11 },  // multilevel: shallower second level extends no-deco time
-    { t: 42, d: 11 },
-    { t: 46, d: 5 },
-    { t: 49, d: 5 },   // 3-minute safety stop at 5m before surfacing
-    { t: 50, d: 0 },
-  ],
+  waypoints: DEFAULT_DIVE_WAYPOINTS.map((wp) => ({ ...wp })),
   maxTime: 60,   // graph horizontal scale, auto-grows
   maxDepth: 40,  // graph vertical scale, auto-grows
 
@@ -71,7 +76,12 @@ const state = {
   altitudeIndex: 0,            // index into ACTIVE_COMPUTER.altitudePresets
   gfIndex: ACTIVE_COMPUTER.defaultGfIndex, // index into ACTIVE_COMPUTER.gfPresets
 
-  simRunning: false,
+  // Single source of truth for "what state are we in" — one of:
+  // 'planning-dive' | 'diving' | 'dive-paused' | 'dive-complete' |
+  // 'planning-interval' | 'interval-running' | 'interval-paused' | 'interval-complete'
+  // See PHASE_CONFIG for what each phase shows/allows.
+  phase: 'planning-dive',
+
   simSpeed: 1,
   simStartReal: 0,       // performance.now() at (re)start
   simElapsedAtStart: 0,  // simulated minutes already elapsed when (re)started
@@ -85,9 +95,11 @@ const state = {
   dragIndex: null,
   dragMoved: false,
 
+  // Which specific pause happened, for picking the right warning message
+  // and the red/warning button color — a detail of 'dive-paused', not a
+  // separate driver of button visibility (that's state.phase).
   pauseReason: null,       // null | 'manual' | 'ndl-warning' | 'ceiling-breach'
   ndlWarningShown: false,  // the ndl-warning pause fires at most once per dive run
-  diveFinished: false,     // true only once finishDive() has actually run
 
   ceilingDepthRounded: 0,      // displayed/enforced stop depth, rounded up to 3m
   decoStopSecondsRemaining: 0, // time left at the current held depth before ascent is allowed
@@ -136,6 +148,34 @@ function gfAnchorDepth(actualDepth, previousCeiling) {
 }
 
 // ---------------------------------------------------------------------------
+// State machine
+// ---------------------------------------------------------------------------
+
+// The single source of truth for the primary/reset button row's contents.
+// Each entry: the primary button's label, whether the speed slider shows,
+// and whether Reset renders full-size or compact.
+const PHASE_CONFIG = {
+  'planning-dive':     { label: 'Start Simulation', showSlider: false, resetSize: 'full' },
+  'diving':            { label: 'Pause',            showSlider: true,  resetSize: 'small' },
+  'dive-paused':       { label: 'Continue',         showSlider: true,  resetSize: 'full' },
+  'dive-complete':     { label: 'Surface Interval',  showSlider: false, resetSize: 'full' },
+  'planning-interval': { label: 'Start Simulation', showSlider: false, resetSize: 'full' },
+  'interval-running':  { label: 'Pause',            showSlider: true,  resetSize: 'small' },
+  'interval-paused':   { label: 'Continue',         showSlider: true,  resetSize: 'full' },
+  'interval-complete': { label: 'Next Dive',         showSlider: false, resetSize: 'full' },
+};
+
+const DEFAULT_INTERVAL_MINUTES = 60;
+
+function isRunning() {
+  return state.phase === 'diving' || state.phase === 'interval-running';
+}
+
+function isIntervalMode() {
+  return state.phase.includes('interval');
+}
+
+// ---------------------------------------------------------------------------
 // DOM references
 // ---------------------------------------------------------------------------
 
@@ -155,6 +195,8 @@ const gfValueEl = document.getElementById('gf-value');
 const gfIconEl = document.getElementById('gf-icon');
 
 const startBtn = document.getElementById('start-btn');
+const resetBtn = document.getElementById('reset-btn');
+const speedControlEl = document.querySelector('.speed-control');
 const speedSlider = document.getElementById('speed-slider');
 const speedValueEl = document.getElementById('speed-value');
 const logListEl = document.getElementById('log-list');
@@ -301,7 +343,7 @@ function drawProfile() {
   }
 
   // current-time cursor
-  if (state.simRunning || state.simElapsedMinutes > 0) {
+  if (isRunning() || state.simElapsedMinutes > 0) {
     const lastT = state.waypoints[state.waypoints.length - 1].t;
     const cursorT = Math.min(state.simElapsedMinutes, lastT);
     const x = timeToX(cursorT);
@@ -338,7 +380,7 @@ function drawProfile() {
   });
 
   // moving marker
-  if (state.simRunning || state.simElapsedMinutes > 0) {
+  if (isRunning() || state.simElapsedMinutes > 0) {
     const t = Math.min(state.simElapsedMinutes, state.waypoints[state.waypoints.length - 1].t);
     const x = timeToX(t);
     const y = depthToY(depthAtTime(t));
@@ -393,7 +435,7 @@ function canvasPoint(evt) {
 // that zone is otherwise dead space for mousedown (locked waypoints are
 // already unclickable), so there's no collision with waypoint editing.
 function inScrubbableZone(x) {
-  return !state.simRunning && state.simElapsedMinutes > 0 && xToTime(x) <= state.simElapsedMinutes;
+  return !isRunning() && state.simElapsedMinutes > 0 && xToTime(x) <= state.simElapsedMinutes;
 }
 
 // Hover feedback: the scrubbable timeline gets a horizontal resize cursor,
@@ -440,7 +482,9 @@ window.addEventListener('mousemove', (evt) => {
   const upperBound = nextWp ? nextWp.t - 1 : Infinity;
   // Snap to a 1 minute / 1 meter grid.
   const t = Math.min(upperBound, Math.max(lowerBound, Math.round(xToTime(x))));
-  const d = Math.max(0, Math.round(yToDepth(y)));
+  // Surface-interval planning is a flat line at 0m — only duration (t) is
+  // adjustable, reusing this same drag interaction rather than a new one.
+  const d = state.phase === 'planning-interval' ? 0 : Math.max(0, Math.round(yToDepth(y)));
   state.waypoints[state.dragIndex] = { t, d };
   updateGraphScale();
   drawProfile();
@@ -472,7 +516,7 @@ window.addEventListener('mouseup', (evt) => {
     // click on empty space: add a new waypoint (only in the editable future),
     // snapped to a 1 minute / 1 meter grid
     const t = Math.max(0, Math.round(xToTime(x)));
-    const d = Math.max(0, Math.round(yToDepth(y)));
+    const d = state.phase === 'planning-interval' ? 0 : Math.max(0, Math.round(yToDepth(y)));
     if (state.simElapsedMinutes === 0 || t > state.simElapsedMinutes + LOCK_EPSILON) {
       state.waypoints.push({ t, d });
       sortWaypoints();
@@ -568,7 +612,7 @@ speedSlider.addEventListener('input', () => {
   state.simSpeed = Number(speedSlider.value);
   speedValueEl.textContent = `${state.simSpeed}x`;
   // Re-anchor timing so the speed change takes effect immediately.
-  if (state.simRunning) {
+  if (isRunning()) {
     state.simElapsedAtStart = state.simElapsedMinutes;
     state.simStartReal = performance.now();
   }
@@ -693,7 +737,15 @@ function updateDisplay(snapshot) {
   depthValueEl.textContent = snapshot.depth.toFixed(1);
   timeValueEl.textContent = formatTime(snapshot.minutes);
 
-  if (snapshot.errorTriggered) {
+  if (isIntervalMode()) {
+    // Ceiling/deco/safety-stop/ERROR are all dive-only concerns — none of
+    // them apply at a fixed 0m surface interval, so they're simply not
+    // shown (the underlying state/logic that drives them is unmodified,
+    // per spec — this only changes what gets displayed).
+    ndlLabelEl.textContent = 'Surface Time';
+    ndlValueEl.textContent = formatTime(snapshot.minutes);
+    ndlValueEl.classList.remove('blink-error', 'compact-value');
+  } else if (snapshot.errorTriggered) {
     ndlLabelEl.textContent = '';
     ndlValueEl.textContent = 'ERROR';
     ndlValueEl.classList.add('blink-error');
@@ -749,7 +801,7 @@ function liveSnapshot() {
     // Live while the dive is running, but frozen to the session-high mark
     // once finished — otherwise it'd show empty right as the dive ends,
     // since the diver is no longer ascending at that point.
-    ascentRateBarLevel: state.diveFinished ? state.maxAscentRateBarLevel : state.ascentRateBarLevel,
+    ascentRateBarLevel: state.phase === 'dive-complete' ? state.maxAscentRateBarLevel : state.ascentRateBarLevel,
   };
 }
 
@@ -771,7 +823,10 @@ function replayTissuesTo(targetMinutes) {
     const d = depthAtTime(m);
     const pAmb = ambientPressureAtDepth(d, env.altitudeMeters);
     tissues = stepCompartments(tissues, inspiredInertGasPressure(pAmb, env.nitroxPercent), 1);
-    previousCeiling = ceilingDepth(tissues, gfAnchorDepth(d, previousCeiling), gf.low, gf.high, env.altitudeMeters);
+    // Rounded, not raw — matches the live sim's state.ceilingDepthRounded
+    // (see stepEngineToMinute/simulationFrame), so a scrubbed instant shows
+    // the same ceiling the live dive actually showed/enforced at that point.
+    previousCeiling = computeCeiling(tissues, gfAnchorDepth(d, previousCeiling), gf.low, gf.high, env.altitudeMeters).ceilingDepth;
 
     if (d > SAFETY_STOP_ZONE_DEPTH) {
       hasDescendedPastSafetyZone = true;
@@ -829,6 +884,12 @@ function stepEngineToMinute(minute) {
   const env = currentEnvironment();
   const pAmb = ambientPressureAtDepth(depth, env.altitudeMeters);
   state.tissues = stepCompartments(state.tissues, inspiredInertGasPressure(pAmb, env.nitroxPercent), 1);
+
+  // Everything below is dive-only bookkeeping (NDL, ceiling, safety stop,
+  // ascent rate) — meaningless at a fixed 0m surface interval, so it's
+  // skipped entirely rather than computed-and-discarded. The one shared
+  // Haldane call above always runs regardless of mode.
+  if (isIntervalMode()) return;
 
   const gf = currentGF();
   state.ndl = computeNDL(state.tissues, depth, gf.low, env.nitroxPercent, env.altitudeMeters);
@@ -904,42 +965,153 @@ function pinCurrentWaypoint() {
   }
 }
 
-function updateStartButton() {
-  if (state.simRunning) {
-    startBtn.textContent = 'Pause';
-    startBtn.classList.remove('btn-warning');
-  } else if (state.pauseReason) {
-    // paused mid-dive — manually, or by an automatic safety pause —
-    // regardless of how close simElapsedMinutes happens to sit to the last
-    // waypoint's time (a pause can land exactly on the final minute).
-    startBtn.textContent = 'Continue Dive';
-    startBtn.classList.add('btn-warning');
-  } else {
-    startBtn.textContent = 'Start Simulation';
-    startBtn.classList.remove('btn-warning');
-  }
+// Single source of truth for the primary/reset button row's contents —
+// reads PHASE_CONFIG for the current phase and applies it. Replaces the old
+// three-flag-derived updateStartButton().
+function updatePrimaryButton() {
+  const config = PHASE_CONFIG[state.phase];
+  startBtn.textContent = config.label;
+  // Red/warning styling only for an auto-triggered dive pause (NDL warning
+  // or ceiling breach), not a manual pause or an interval pause — matches
+  // existing behavior exactly, now derived from pauseReason directly
+  // instead of a third redundant flag.
+  const isWarningPause = state.phase === 'dive-paused' &&
+    (state.pauseReason === 'ndl-warning' || state.pauseReason === 'ceiling-breach');
+  startBtn.classList.toggle('btn-warning', isWarningPause);
+
+  speedControlEl.style.display = config.showSlider ? 'flex' : 'none';
+  resetBtn.classList.toggle('btn-compact', config.resetSize === 'small');
 }
 
 // Stops the sim loop for any reason (manual pause or an automatic safety
 // pause), fixes history in place, and surfaces the relevant warning.
-function pauseSimulation(reason) {
-  state.simRunning = false;
+// Renamed from pauseSimulation — now shared between dive and interval runs.
+function pauseRun(reason) {
+  // Checked before the phase changes below: which kind of run was active.
+  const wasInterval = isIntervalMode();
   state.pauseReason = reason;
+  state.phase = wasInterval ? 'interval-paused' : 'dive-paused';
   if (state.rafId) cancelAnimationFrame(state.rafId);
   pinCurrentWaypoint();
 
   if (reason === 'ndl-warning') showWarning(MSG_NDL_WARNING);
   else if (reason === 'ceiling-breach') showWarning(MSG_CEILING_BREACH);
 
-  updateStartButton();
+  updatePrimaryButton();
   drawProfile();
 }
 
-function finishDive() {
-  state.simRunning = false;
+// Resumes from 'dive-paused'/'interval-paused' back to the matching
+// running phase. The warning log is left as-is — only a full dive-run
+// reset (enterNextDivePlanning/resetAll) clears it.
+function resumeRun() {
+  const wasIntervalPause = state.phase === 'interval-paused';
   state.pauseReason = null;
-  state.diveFinished = true;
-  updateStartButton();
+  state.phase = wasIntervalPause ? 'interval-running' : 'diving';
+  updatePrimaryButton();
+  state.simElapsedAtStart = state.simElapsedMinutes;
+  state.simStartReal = performance.now();
+  state.rafId = requestAnimationFrame(simulationFrame);
+}
+
+// Starts running from a fresh planning phase ('planning-dive' or
+// 'planning-interval') — simElapsedMinutes/lastWholeMinute and all
+// per-run flags are already clean by the time we get here (reset by
+// enterNextDivePlanning/resetAll/enterIntervalPlanning), so this only
+// needs to kick off the timer/rAF loop.
+function startRun(mode) {
+  if (mode === 'dive') {
+    // First check before actually running: the plotted dive must end at
+    // the surface, adding a point if the user didn't finish there themselves.
+    ensureLastWaypointAtSurface();
+    drawProfile();
+  }
+  state.phase = mode === 'dive' ? 'diving' : 'interval-running';
+  updatePrimaryButton();
+  state.simElapsedAtStart = state.simElapsedMinutes;
+  state.simStartReal = performance.now();
+  state.rafId = requestAnimationFrame(simulationFrame);
+}
+
+// From 'dive-complete': plan a surface interval. Tissues are deliberately
+// left untouched — off-gassing the just-finished dive's residual loading
+// is the entire point.
+function enterIntervalPlanning() {
+  state.waypoints = [{ t: 0, d: 0 }, { t: DEFAULT_INTERVAL_MINUTES, d: 0 }];
+  state.simElapsedMinutes = 0;
+  state.lastWholeMinute = -1;
+  updateGraphScale();
+  state.phase = 'planning-interval';
+  updatePrimaryButton();
+  drawProfile();
+}
+
+// Resets every per-run flag to a clean slate — shared by
+// enterNextDivePlanning() and resetAll(), which differ only in whether
+// tissues/waypoints also get reset.
+function resetPerRunFlags() {
+  state.simElapsedMinutes = 0;
+  state.lastWholeMinute = -1;
+  state.ndl = Infinity;
+  state.ndlWarningShown = false;
+  state.pauseReason = null;
+  state.ceilingDepthRounded = 0;
+  state.decoStopSecondsRemaining = 0;
+  state.previousCeiling = 0;
+  state.errorTriggered = false;
+  state.errorTriggeredAtMinute = null;
+  state.hasDescendedPastSafetyZone = false;
+  state.safetyStopEnteredAtMinute = null;
+  state.safetyStopSecondsRemaining = null;
+  state.ascentRateBarLevel = 0;
+  state.maxAscentRateBarLevel = 0;
+  state.ascentRateWarningShown = false;
+  state.hasBeenUnderwater = false;
+  clearWarning();
+}
+
+// From 'interval-complete': plan the next dive. Does NOT reset tissues —
+// only Reset does that — so residual loading carries into the new dive.
+function enterNextDivePlanning() {
+  resetPerRunFlags();
+  state.waypoints = DEFAULT_DIVE_WAYPOINTS.map((wp) => ({ ...wp }));
+  updateGraphScale();
+  state.phase = 'planning-dive';
+  updatePrimaryButton();
+  updateDisplay(liveSnapshot());
+  drawBars();
+  drawProfile();
+}
+
+// Available in every phase: fully returns to 'planning-dive' with
+// compartments reset to sea-level surface equilibrium (not the currently
+// selected altitude — an explicit exception to how altitude is normally
+// applied) and all dive/interval history cleared.
+function resetAll() {
+  if (state.rafId) cancelAnimationFrame(state.rafId);
+  resetPerRunFlags();
+  state.waypoints = DEFAULT_DIVE_WAYPOINTS.map((wp) => ({ ...wp }));
+  state.tissues = createCompartments(state.nitroxPercent, 0);
+  updateGraphScale();
+  state.phase = 'planning-dive';
+  updatePrimaryButton();
+  updateDisplay(liveSnapshot());
+  drawBars();
+  drawProfile();
+}
+
+function finishRun() {
+  state.pauseReason = null;
+
+  if (isIntervalMode()) {
+    state.phase = 'interval-complete';
+    updatePrimaryButton();
+    updateDisplay(liveSnapshot());
+    return;
+  }
+
+  state.phase = 'dive-complete';
+  updatePrimaryButton();
 
   const env = currentEnvironment();
   const exceededLimits = hasSurfacingViolation(state.tissues, env.altitudeMeters);
@@ -976,51 +1148,62 @@ function simulationFrame() {
     if (depthAtStep > 0) {
       state.hasBeenUnderwater = true;
     }
-    const gf = currentGF();
-    const env = currentEnvironment();
-    // previousCeiling is read as the anchor BEFORE being overwritten below —
-    // see gfAnchorDepth's doc comment for why the anchor is needed here.
-    const ceiling = ceilingDepth(state.tissues, gfAnchorDepth(depthAtStep, state.previousCeiling), gf.low, gf.high, env.altitudeMeters);
 
-    // A stop was already required last minute and the diver is now
-    // shallower than that — a required stop was left early. The first
-    // ceiling-breach of a dive (previousCeiling was still 0) just means "a
-    // stop is now required," not a violation.
-    if (state.previousCeiling > 0 && depthAtStep < state.previousCeiling) {
-      if (!state.errorTriggered) {
-        state.errorTriggered = true;
-        state.errorTriggeredAtMinute = state.lastWholeMinute;
+    // Ceiling breach, NDL warning, and "first surfacing ends the dive" are
+    // all dive-only concerns — depth is always 0 during a surface interval,
+    // so none of these apply (the surfacing check especially: left
+    // unguarded, it would end an interval after its very first minute).
+    if (!isIntervalMode()) {
+      // Use the SAME rounded ceiling stepEngineToMinute already computed
+      // this same minute (state.ceilingDepthRounded) — not a separate raw
+      // value. This used to recompute an independent unrounded ceiling
+      // here, which let a fractional-meter ceiling (rounded UP to a full
+      // 3m stop for display) go completely undetected by this breach
+      // check until the diver's depth dropped below that tiny raw number
+      // — often only at the literal surface, well past the "3m" stop the
+      // display had been showing all along.
+      const ceiling = state.ceilingDepthRounded;
+
+      // A stop was already required last minute and the diver is now
+      // shallower than that — a required stop was left early. The first
+      // ceiling-breach of a dive (previousCeiling was still 0) just means "a
+      // stop is now required," not a violation.
+      if (state.previousCeiling > 0 && depthAtStep < state.previousCeiling) {
+        if (!state.errorTriggered) {
+          state.errorTriggered = true;
+          state.errorTriggeredAtMinute = state.lastWholeMinute;
+        }
       }
-    }
-    state.previousCeiling = ceiling;
+      state.previousCeiling = ceiling;
 
-    if (ceiling > 0 && depthAtStep < ceiling) {
-      state.simElapsedMinutes = state.lastWholeMinute;
-      updateDisplay(liveSnapshot());
-      drawBars();
-      pauseSimulation('ceiling-breach');
-      return;
-    }
+      if (ceiling > 0 && depthAtStep < ceiling) {
+        state.simElapsedMinutes = state.lastWholeMinute;
+        updateDisplay(liveSnapshot());
+        drawBars();
+        pauseRun('ceiling-breach');
+        return;
+      }
 
-    if (!state.ndlWarningShown && Number.isFinite(state.ndl) && state.ndl < ACTIVE_COMPUTER.ndlWarningMinutes) {
-      state.ndlWarningShown = true;
-      state.simElapsedMinutes = state.lastWholeMinute;
-      updateDisplay(liveSnapshot());
-      drawBars();
-      pauseSimulation('ndl-warning');
-      return;
-    }
+      if (!state.ndlWarningShown && Number.isFinite(state.ndl) && state.ndl < ACTIVE_COMPUTER.ndlWarningMinutes) {
+        state.ndlWarningShown = true;
+        state.simElapsedMinutes = state.lastWholeMinute;
+        updateDisplay(liveSnapshot());
+        drawBars();
+        pauseRun('ndl-warning');
+        return;
+      }
 
-    // The first return to the surface ends the dive right here — any
-    // waypoints plotted after this point in time (e.g. a profile that dips
-    // down again after surfacing) are simply never reached.
-    if (state.hasBeenUnderwater && depthAtStep <= 0) {
-      state.simElapsedMinutes = state.lastWholeMinute;
-      updateDisplay(liveSnapshot());
-      drawBars();
-      drawProfile();
-      finishDive();
-      return;
+      // The first return to the surface ends the dive right here — any
+      // waypoints plotted after this point in time (e.g. a profile that dips
+      // down again after surfacing) are simply never reached.
+      if (state.hasBeenUnderwater && depthAtStep <= 0) {
+        state.simElapsedMinutes = state.lastWholeMinute;
+        updateDisplay(liveSnapshot());
+        drawBars();
+        drawProfile();
+        finishRun();
+        return;
+      }
     }
   }
 
@@ -1028,66 +1211,50 @@ function simulationFrame() {
   drawBars();
   drawProfile();
 
+  // Shared completion check — a dive's lastWaypointTime is the surfacing
+  // point; an interval's is its planned duration. Either way, reaching it
+  // means the run is done.
   if (state.simElapsedMinutes >= lastWaypointTime) {
-    finishDive();
+    finishRun();
     return;
   }
 
   state.rafId = requestAnimationFrame(simulationFrame);
 }
 
-startBtn.addEventListener('click', () => {
+// Dispatches on the current phase — the one place deciding what the
+// primary button actually does, driven entirely by state.phase.
+function onPrimaryButtonClick() {
   if (state.waypoints.length < 2) {
     alert('Add at least two waypoints to the dive profile before starting.');
     return;
   }
-
-  if (state.simRunning) {
-    pauseSimulation('manual');
-    return;
+  switch (state.phase) {
+    case 'planning-dive':
+      startRun('dive');
+      break;
+    case 'diving':
+    case 'interval-running':
+      pauseRun('manual');
+      break;
+    case 'dive-paused':
+    case 'interval-paused':
+      resumeRun();
+      break;
+    case 'dive-complete':
+      enterIntervalPlanning();
+      break;
+    case 'planning-interval':
+      startRun('interval');
+      break;
+    case 'interval-complete':
+      enterNextDivePlanning();
+      break;
   }
+}
 
-  // First check before actually running: the plotted dive must end at the
-  // surface, adding a point if the user didn't finish there themselves.
-  ensureLastWaypointAtSurface();
-  drawProfile();
-
-  // (Re)start / resume
-  if (state.diveFinished) {
-    // previous run finished — reset
-    state.simElapsedMinutes = 0;
-    state.lastWholeMinute = -1;
-    const env = currentEnvironment();
-    state.tissues = createCompartments(env.nitroxPercent, env.altitudeMeters);
-    state.ndl = Infinity;
-    state.ndlWarningShown = false;
-    state.pauseReason = null;
-    state.diveFinished = false;
-    state.ceilingDepthRounded = 0;
-    state.decoStopSecondsRemaining = 0;
-    state.previousCeiling = 0;
-    state.errorTriggered = false;
-    state.errorTriggeredAtMinute = null;
-    state.hasDescendedPastSafetyZone = false;
-    state.safetyStopEnteredAtMinute = null;
-    state.safetyStopSecondsRemaining = null;
-    state.ascentRateBarLevel = 0;
-    state.maxAscentRateBarLevel = 0;
-    state.ascentRateWarningShown = false;
-    state.hasBeenUnderwater = false;
-    clearWarning();
-  } else if (state.pauseReason) {
-    // resuming from a pause (manual, ndl-warning, or ceiling-breach) — the
-    // log is left as-is; only a full dive-run reset clears it.
-    state.pauseReason = null;
-  }
-
-  state.simRunning = true;
-  updateStartButton();
-  state.simElapsedAtStart = state.simElapsedMinutes;
-  state.simStartReal = performance.now();
-  state.rafId = requestAnimationFrame(simulationFrame);
-});
+startBtn.addEventListener('click', onPrimaryButtonClick);
+resetBtn.addEventListener('click', resetAll);
 
 // ---------------------------------------------------------------------------
 // Init
@@ -1100,5 +1267,5 @@ refreshSelectorLabels();
 resizeProfileCanvas();
 resizeBarsCanvas();
 updateDisplay(liveSnapshot());
-updateStartButton();
+updatePrimaryButton();
 clearWarning();

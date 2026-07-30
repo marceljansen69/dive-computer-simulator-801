@@ -288,5 +288,55 @@ function check(name, condition) {
   check('NDL at 3000m is never longer than at sea level, same depth/gas', altitudeNDL <= seaLevelNDL);
 }
 
+// 17. Surface interval reuse: a "surface interval" is modeled in ui.js as an
+// ordinary flat 0m profile run through the same per-minute stepCompartments
+// loop already used for dives. This proves there's nothing to duplicate —
+// stepping via ambientPressureAtDepth(0, altitude) for duration T gives the
+// exact same result as a direct stepCompartments call with the same pAmb.
+{
+  const altitude = 1500;
+  const startingTissues = createCompartments(21, altitude);
+  const durationMinutes = 45;
+
+  // "Surface interval" path: minute-by-minute, exactly how ui.js's
+  // stepEngineToMinute drives it (depth pinned at 0 the whole time).
+  let viaProfileLoop = startingTissues.slice();
+  for (let m = 1; m <= durationMinutes; m++) {
+    const pAmb = ambientPressureAtDepth(0, altitude);
+    viaProfileLoop = stepCompartments(viaProfileLoop, inspiredInertGasPressure(pAmb, 21), 1);
+  }
+
+  // Direct path: one big stepCompartments call at the same pAmb.
+  const pAmbDirect = ambientPressureAtDepth(0, altitude);
+  const viaDirectCall = stepCompartments(startingTissues, inspiredInertGasPressure(pAmbDirect, 21), durationMinutes);
+
+  check(
+    'surface-interval-as-flat-profile matches a direct stepCompartments call exactly (no parallel Haldane logic)',
+    viaProfileLoop.every((p, i) => Math.abs(p - viaDirectCall[i]) < 1e-9)
+  );
+}
+
+// 18. Surface interval altitude correctness: depth-0 ambient pressure must
+// equal the same altitude-adjusted surface pressure used everywhere else —
+// not silently 1 bar — and the surfacing/M-value check must agree.
+{
+  const altitude = 3000;
+  check(
+    'ambientPressureAtDepth(0, altitude) equals surfacePressureAtAltitude(altitude) exactly',
+    ambientPressureAtDepth(0, altitude) === surfacePressureAtAltitude(altitude)
+  );
+
+  // A tissue state saturated at depth-0/altitude equilibrium must never
+  // itself read as a surfacing violation at that same altitude — confirms
+  // hasSurfacingViolation is using the altitude-adjusted reference, not a
+  // hardcoded 1 bar (which would make even a freshly-equilibrated diver
+  // read as "over the limit" at high altitude).
+  const equilibrated = createCompartments(21, altitude);
+  check(
+    'a tissue state at surface equilibrium for its altitude is never a surfacing violation',
+    !hasSurfacingViolation(equilibrated, altitude)
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
