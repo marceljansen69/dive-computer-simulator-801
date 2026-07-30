@@ -3,19 +3,28 @@
 // computes tissue pressures itself.
 
 import {
-  COMPARTMENTS,
-  createCompartments,
-  stepCompartments,
+  createEngine,
   ambientPressureAtDepth,
   surfacePressureAtAltitude,
   inspiredInertGasPressure,
   mValue,
+} from './engine.js';
+import { ACTIVE_COMPUTER } from './computer-profiles.js';
+
+// Every parameter that varies by "dive computer brand" lives in
+// computer-profiles.js — swap which profile ACTIVE_COMPUTER points to
+// there to simulate a different computer. Everything below just reads
+// from it; nothing in this file should hardcode a computer-specific value.
+const COMPARTMENTS = ACTIVE_COMPUTER.compartments;
+const {
+  createCompartments,
+  stepCompartments,
   computeNDL,
   ceilingDepth,
   computeCeiling,
   computeDecoStopSeconds,
   hasSurfacingViolation,
-} from './engine.js';
+} = createEngine(ACTIVE_COMPUTER.compartments, ACTIVE_COMPUTER.ceilingRoundingMeters);
 
 const MSG_NDL_WARNING = "You're getting close to your limits, adjust the dive plan";
 const MSG_CEILING_BREACH = 'Decompression stop required';
@@ -26,12 +35,12 @@ const LOCK_EPSILON = 1e-6;
 
 // Safety stop: advisory only, unlike the mandatory decompression ceiling —
 // real dive computers show a countdown but never force the diver to comply.
-const SAFETY_STOP_ZONE_DEPTH = 6; // meters; shallower than this arms the reminder
-const SAFETY_STOP_SECONDS = 180;  // 3 minutes
+const SAFETY_STOP_ZONE_DEPTH = ACTIVE_COMPUTER.safetyStop.zoneDepth;
+const SAFETY_STOP_SECONDS = ACTIVE_COMPUTER.safetyStop.seconds;
 
 // Ascent rate warning threshold (m/min) — deliberately a different, lower
-// cutoff than the bar's own top level (18 m/min); per explicit spec.
-const ASCENT_RATE_WARNING_THRESHOLD = 9;
+// cutoff than the bar's own top level; per explicit spec.
+const ASCENT_RATE_WARNING_THRESHOLD = ACTIVE_COMPUTER.ascentRate.warningThreshold;
 
 // DIAGNOSTIC FLAG — set true to log a full per-compartment ceiling
 // breakdown (see engine.js's maxCeilingPressureWithGF) once per simulated
@@ -58,9 +67,9 @@ const state = {
   maxTime: 60,   // graph horizontal scale, auto-grows
   maxDepth: 40,  // graph vertical scale, auto-grows
 
-  nitroxPercent: 21,           // UI-only for now; engine always runs on air
-  altitudeIndex: 0,            // 0 / 1 / 2 -> 0m / 1500m / 3000m, placeholder only
-  gfIndex: 0,                  // 0 / 1 / 2 -> GF_PRESETS below; wired into the engine
+  nitroxPercent: ACTIVE_COMPUTER.nitrox.default,
+  altitudeIndex: 0,            // index into ACTIVE_COMPUTER.altitudePresets
+  gfIndex: ACTIVE_COMPUTER.defaultGfIndex, // index into ACTIVE_COMPUTER.gfPresets
 
   simRunning: false,
   simSpeed: 1,
@@ -99,14 +108,8 @@ const state = {
   previewTimeMinutes: null,    // non-null while scrubbing the timeline (paused-only, preview-only)
 };
 
-const ALTITUDE_PRESETS = [0, 1500, 3000];
-// Matches Shearwater/Garmin convention: GF Low/GF High as percentages.
-// Bar count increases with conservatism (fewer bars = less conservative).
-const GF_PRESETS = [
-  { low: 45, high: 95, bars: 1 }, // low conservatism — default
-  { low: 40, high: 85, bars: 2 }, // medium conservatism
-  { low: 35, high: 75, bars: 3 }, // high conservatism
-];
+const ALTITUDE_PRESETS = ACTIVE_COMPUTER.altitudePresets;
+const GF_PRESETS = ACTIVE_COMPUTER.gfPresets;
 
 // Current GF Low/High as 0..1 fractions, for engine calls.
 function currentGF() {
@@ -246,15 +249,14 @@ function ascentRateAtMinute(minute) {
 // Ascent-rate bar level (0-9) for a given rate, m/min. 0 = not ascending.
 function ascentRateBarLevel(metersPerMinute) {
   if (metersPerMinute <= 0) return 0;
-  if (metersPerMinute < 4) return 1;
-  if (metersPerMinute < 5) return 2;
-  if (metersPerMinute < 6) return 3;
-  if (metersPerMinute < 7) return 4;
-  if (metersPerMinute < 8) return 5;
-  if (metersPerMinute < 9) return 6;
-  if (metersPerMinute < 10) return 7;
-  if (metersPerMinute <= 10) return 8;
-  return 9;
+  const tiers = ACTIVE_COMPUTER.ascentRate.tierUpperBounds;
+  for (let i = 0; i < tiers.length; i++) {
+    if (metersPerMinute < tiers[i]) return i + 1;
+  }
+  // At or above the last listed bound: still one tier short of the top
+  // unless it's genuinely exceeded (matches "reaching N" vs "more than N").
+  if (metersPerMinute <= tiers[tiers.length - 1]) return tiers.length + 1;
+  return tiers.length + 2;
 }
 
 // A waypoint at or before the current simulated time represents dive history
@@ -529,13 +531,13 @@ function refreshSelectorLabels() {
 // after a full reset, same as before the dive started.
 document.getElementById('nitrox-up').addEventListener('click', () => {
   if (state.simElapsedMinutes > 0) return;
-  state.nitroxPercent = Math.min(50, state.nitroxPercent + 1);
+  state.nitroxPercent = Math.min(ACTIVE_COMPUTER.nitrox.max, state.nitroxPercent + 1);
   refreshSelectorLabels();
   drawBars();
 });
 document.getElementById('nitrox-down').addEventListener('click', () => {
   if (state.simElapsedMinutes > 0) return;
-  state.nitroxPercent = Math.max(21, state.nitroxPercent - 1);
+  state.nitroxPercent = Math.max(ACTIVE_COMPUTER.nitrox.min, state.nitroxPercent - 1);
   refreshSelectorLabels();
   drawBars();
 });
@@ -1000,7 +1002,7 @@ function simulationFrame() {
       return;
     }
 
-    if (!state.ndlWarningShown && Number.isFinite(state.ndl) && state.ndl < 3) {
+    if (!state.ndlWarningShown && Number.isFinite(state.ndl) && state.ndl < ACTIVE_COMPUTER.ndlWarningMinutes) {
       state.ndlWarningShown = true;
       state.simElapsedMinutes = state.lastWholeMinute;
       updateDisplay(liveSnapshot());

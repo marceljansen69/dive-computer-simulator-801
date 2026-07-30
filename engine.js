@@ -53,22 +53,10 @@ export function ambientPressureAtDepth(depthMeters, altitudeMeters = 0) {
 // passed in, rather than using this directly.
 export const PAMB_0 = 0.79;
 
-// Surface equilibrium N2 pressure for a given O2 fraction (nitrox %) and
-// altitude at t=0.
-export function createCompartments(nitroxPercent = 21, altitudeMeters = 0) {
-  const pN2Surface = inspiredInertGasPressure(surfacePressureAtAltitude(altitudeMeters), nitroxPercent);
-  return COMPARTMENTS.map(() => pN2Surface);
-}
-
 // Haldane equation: one compartment, one timestep.
 export function haldaneStep(pOld, pAmb, halfTime, minutes) {
   const k = Math.log(2) / halfTime;
   return pAmb + (pOld - pAmb) * Math.exp(-k * minutes);
-}
-
-// Advance every compartment by `minutes` at constant ambient pressure `pAmb`.
-export function stepCompartments(pTissues, pAmb, minutes) {
-  return pTissues.map((p, i) => haldaneStep(p, pAmb, COMPARTMENTS[i].halfTime, minutes));
 }
 
 export function mValue(pAmb, a, b) {
@@ -101,151 +89,185 @@ export function computeGFNow(currentDepthMeters, firstStopDepthMeters, gfLow, gf
   return gfHigh + fraction * (gfLow - gfHigh);
 }
 
-// Deepest (controlling) GF-adjusted ceiling as an ambient pressure (bar),
-// plus which compartment controls. Two passes: GF Low alone determines
-// whether a stop exists at all and how deep the first one is; GF_now
-// (interpolated from that using currentDepthMeters) determines the actual
-// controlling ceiling used everywhere else. altitudeMeters only affects the
-// pressure<->depth conversion (the local surface baseline) — nitrox isn't
-// needed here since tissue pressures already reflect it from however they
-// were loaded.
-//
-// TEMPORARY DIAGNOSTIC: pass a truthy `debugLabel` to log the full
-// per-compartment breakdown for this call. Not wired to anything by
-// default — only call sites that pass a label produce output.
-function maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
-  const surfacePressure = surfacePressureAtAltitude(altitudeMeters);
-  let firstStopPressure = -Infinity;
-  const pass1 = [];
-  for (let i = 0; i < pTissues.length; i++) {
-    const { a, b } = COMPARTMENTS[i];
-    const p = gfCeilingPressure(pTissues[i], a, b, gfLow);
-    pass1.push(Math.max(0, (p - surfacePressure) * 10));
-    if (p > firstStopPressure) firstStopPressure = p;
+// Builds the compartment-dependent half of the engine's API for a specific
+// compartment table (and ceiling-rounding convention) — everything above
+// this point is already parameter-only and needs no per-computer wiring.
+// This is how a different "dive computer" (a different half-time/a/b table,
+// or a different rounding increment) gets simulated: call createEngine with
+// its table instead of the default COMPARTMENTS, and use the returned
+// functions in place of these — the math inside each function is identical
+// to before, only the compartment table/rounding it closes over changes.
+export function createEngine(compartments, ceilingRoundingMeters = 3) {
+  // Surface equilibrium N2 pressure for a given O2 fraction (nitrox %) and
+  // altitude at t=0.
+  function createCompartments(nitroxPercent = 21, altitudeMeters = 0) {
+    const pN2Surface = inspiredInertGasPressure(surfacePressureAtAltitude(altitudeMeters), nitroxPercent);
+    return compartments.map(() => pN2Surface);
   }
-  const firstStopDepthMeters = Math.max(0, (firstStopPressure - surfacePressure) * 10);
-  const gfNow = computeGFNow(currentDepthMeters, firstStopDepthMeters, gfLow, gfHigh);
 
-  let maxCeilingP = -Infinity;
-  let controllingCompartmentIndex = 0;
-  const pass2 = [];
-  for (let i = 0; i < pTissues.length; i++) {
-    const { a, b } = COMPARTMENTS[i];
-    const p = gfCeilingPressure(pTissues[i], a, b, gfNow);
-    pass2.push(Math.max(0, (p - surfacePressure) * 10));
-    if (p > maxCeilingP) {
-      maxCeilingP = p;
-      controllingCompartmentIndex = i;
+  // Advance every compartment by `minutes` at constant ambient pressure `pAmb`.
+  function stepCompartments(pTissues, pAmb, minutes) {
+    return pTissues.map((p, i) => haldaneStep(p, pAmb, compartments[i].halfTime, minutes));
+  }
+
+  // Deepest (controlling) GF-adjusted ceiling as an ambient pressure (bar),
+  // plus which compartment controls. Two passes: GF Low alone determines
+  // whether a stop exists at all and how deep the first one is; GF_now
+  // (interpolated from that using currentDepthMeters) determines the actual
+  // controlling ceiling used everywhere else. altitudeMeters only affects
+  // the pressure<->depth conversion (the local surface baseline) — nitrox
+  // isn't needed here since tissue pressures already reflect it from
+  // however they were loaded.
+  //
+  // TEMPORARY DIAGNOSTIC: pass a truthy `debugLabel` to log the full
+  // per-compartment breakdown for this call. Not wired to anything by
+  // default — only call sites that pass a label produce output.
+  function maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
+    const surfacePressure = surfacePressureAtAltitude(altitudeMeters);
+    let firstStopPressure = -Infinity;
+    const pass1 = [];
+    for (let i = 0; i < pTissues.length; i++) {
+      const { a, b } = compartments[i];
+      const p = gfCeilingPressure(pTissues[i], a, b, gfLow);
+      pass1.push(Math.max(0, (p - surfacePressure) * 10));
+      if (p > firstStopPressure) firstStopPressure = p;
     }
-  }
+    const firstStopDepthMeters = Math.max(0, (firstStopPressure - surfacePressure) * 10);
+    const gfNow = computeGFNow(currentDepthMeters, firstStopDepthMeters, gfLow, gfHigh);
 
-  if (debugLabel) {
-    const roundedEach = pass2.map((d) => (d <= 0 ? 0 : Math.ceil(d / 3) * 3));
-    const maxPass2 = Math.max(...pass2);
-    console.log(
-      `[deco-debug] ${debugLabel} | currentDepth=${currentDepthMeters.toFixed(2)}m ` +
-      `gfLow=${gfLow} gfHigh=${gfHigh}`
-    );
-    console.log(
-      '  pass1 (flat GF_low) ceiling depth per compartment (1-16):',
-      pass1.map((d) => d.toFixed(2)).join(', ')
-    );
-    console.log(
-      `  firstStopDepthMeters=${firstStopDepthMeters.toFixed(2)}  gfNow=${gfNow.toFixed(4)}`
-    );
-    console.log(
-      '  pass2 (GF_now) ceiling depth per compartment (1-16):',
-      pass2.map((d) => d.toFixed(2)).join(', ')
-    );
-    console.log(
-      '  pass2 rounded (3m) per compartment (1-16):',
-      roundedEach.join(', ')
-    );
-    console.log(
-      `  controllingCompartmentIndex=${controllingCompartmentIndex} (compartment #${controllingCompartmentIndex + 1}), ` +
-      `its depth=${pass2[controllingCompartmentIndex].toFixed(2)}m, max-of-all=${maxPass2.toFixed(2)}m, ` +
-      `isActualMax=${Math.abs(pass2[controllingCompartmentIndex] - maxPass2) < 1e-9}`
-    );
-  }
-
-  return { maxCeilingP, controllingCompartmentIndex };
-}
-
-// Raw (unrounded) GF-adjusted ceiling depth in meters, clamped to 0.
-export function ceilingDepth(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
-  const { maxCeilingP } = maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters, debugLabel);
-  return Math.max(0, (maxCeilingP - surfacePressureAtAltitude(altitudeMeters)) * 10);
-}
-
-// Minutes remaining at the current depth before any compartment's projected
-// pressure would exceed its GF-Low-adjusted allowed pressure at the surface
-// — GF_now for NDL purposes is always flat GF Low, since NDL is about when
-// a ceiling first forms, not about an ascent already in progress. Returns
-// Infinity if no violation occurs within maxMinutes (treat as "no limit").
-//
-// The M-value threshold is a function of TOTAL ambient pressure, not the
-// breathing gas's inert-gas fraction — nitrox only changes how fast tissues
-// load (via inspiredInertGasPressure, below), never the threshold itself.
-// altitude still shifts the surface reference; nitrox must not.
-export function computeNDL(pTissues, depthMeters, gfLow, nitroxPercent = 21, altitudeMeters = 0, maxMinutes = 999) {
-  const pAmb = ambientPressureAtDepth(depthMeters, altitudeMeters);
-  const inspiredPressure = inspiredInertGasPressure(pAmb, nitroxPercent);
-  const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
-  let tissues = pTissues.slice();
-
-  for (let t = 0; t <= maxMinutes; t++) {
-    for (let i = 0; i < tissues.length; i++) {
-      const { a, b } = COMPARTMENTS[i];
-      if (tissues[i] > getAllowedPressure(a, b, surfaceReference, gfLow)) {
-        return t;
+    let maxCeilingP = -Infinity;
+    let controllingCompartmentIndex = 0;
+    const pass2 = [];
+    for (let i = 0; i < pTissues.length; i++) {
+      const { a, b } = compartments[i];
+      const p = gfCeilingPressure(pTissues[i], a, b, gfNow);
+      pass2.push(Math.max(0, (p - surfacePressure) * 10));
+      if (p > maxCeilingP) {
+        maxCeilingP = p;
+        controllingCompartmentIndex = i;
       }
     }
-    tissues = stepCompartments(tissues, inspiredPressure, 1);
+
+    if (debugLabel) {
+      const roundedEach = pass2.map((d) => (d <= 0 ? 0 : Math.ceil(d / ceilingRoundingMeters) * ceilingRoundingMeters));
+      const maxPass2 = Math.max(...pass2);
+      console.log(
+        `[deco-debug] ${debugLabel} | currentDepth=${currentDepthMeters.toFixed(2)}m ` +
+        `gfLow=${gfLow} gfHigh=${gfHigh}`
+      );
+      console.log(
+        '  pass1 (flat GF_low) ceiling depth per compartment (1-16):',
+        pass1.map((d) => d.toFixed(2)).join(', ')
+      );
+      console.log(
+        `  firstStopDepthMeters=${firstStopDepthMeters.toFixed(2)}  gfNow=${gfNow.toFixed(4)}`
+      );
+      console.log(
+        '  pass2 (GF_now) ceiling depth per compartment (1-16):',
+        pass2.map((d) => d.toFixed(2)).join(', ')
+      );
+      console.log(
+        `  pass2 rounded (${ceilingRoundingMeters}m) per compartment (1-16):`,
+        roundedEach.join(', ')
+      );
+      console.log(
+        `  controllingCompartmentIndex=${controllingCompartmentIndex} (compartment #${controllingCompartmentIndex + 1}), ` +
+        `its depth=${pass2[controllingCompartmentIndex].toFixed(2)}m, max-of-all=${maxPass2.toFixed(2)}m, ` +
+        `isActualMax=${Math.abs(pass2[controllingCompartmentIndex] - maxPass2) < 1e-9}`
+      );
+    }
+
+    return { maxCeilingP, controllingCompartmentIndex };
   }
-  return Infinity;
-}
 
-// The controlling (deepest) mandatory decompression stop across all
-// compartments, rounded up to the next 3m increment — the depth actually
-// displayed and enforced, as opposed to the raw unrounded `ceilingDepth`.
-export function computeCeiling(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
-  const { maxCeilingP, controllingCompartmentIndex } =
-    maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters, debugLabel);
-  const rawDepth = Math.max(0, (maxCeilingP - surfacePressureAtAltitude(altitudeMeters)) * 10);
-  const ceilingDepth = rawDepth <= 0 ? 0 : Math.ceil(rawDepth / 3) * 3;
-  if (debugLabel) {
-    console.log(`  => rounded controlling ceiling = ${ceilingDepth}m (raw ${rawDepth.toFixed(2)}m)`);
+  // Raw (unrounded) GF-adjusted ceiling depth in meters, clamped to 0.
+  function ceilingDepth(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
+    const { maxCeilingP } = maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters, debugLabel);
+    return Math.max(0, (maxCeilingP - surfacePressureAtAltitude(altitudeMeters)) * 10);
   }
-  return { ceilingDepth, controllingCompartmentIndex };
-}
 
-// Seconds the diver must remain at heldDepthMeters before computeCeiling
-// would newly report a shallower rounded stop (0 if already clear to
-// ascend further). GF_now is re-derived each step from the evolving tissue
-// state, held at the constant heldDepthMeters. Steps forward in 1-second
-// increments for precision.
-export function computeDecoStopSeconds(pTissues, heldDepthMeters, gfLow, gfHigh, nitroxPercent = 21, altitudeMeters = 0, maxSeconds = 3600) {
-  const pAmb = ambientPressureAtDepth(heldDepthMeters, altitudeMeters);
-  const inspiredPressure = inspiredInertGasPressure(pAmb, nitroxPercent);
-  let tissues = pTissues.slice();
+  // Minutes remaining at the current depth before any compartment's
+  // projected pressure would exceed its GF-Low-adjusted allowed pressure at
+  // the surface — GF_now for NDL purposes is always flat GF Low, since NDL
+  // is about when a ceiling first forms, not about an ascent already in
+  // progress. Returns Infinity if no violation occurs within maxMinutes
+  // (treat as "no limit").
+  //
+  // The M-value threshold is a function of TOTAL ambient pressure, not the
+  // breathing gas's inert-gas fraction — nitrox only changes how fast
+  // tissues load (via inspiredInertGasPressure), never the threshold
+  // itself. altitude still shifts the surface reference; nitrox must not.
+  function computeNDL(pTissues, depthMeters, gfLow, nitroxPercent = 21, altitudeMeters = 0, maxMinutes = 999) {
+    const pAmb = ambientPressureAtDepth(depthMeters, altitudeMeters);
+    const inspiredPressure = inspiredInertGasPressure(pAmb, nitroxPercent);
+    const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
+    let tissues = pTissues.slice();
 
-  if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh, altitudeMeters).ceilingDepth < heldDepthMeters) return 0;
-
-  for (let s = 1; s <= maxSeconds; s++) {
-    tissues = stepCompartments(tissues, inspiredPressure, 1 / 60);
-    if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh, altitudeMeters).ceilingDepth < heldDepthMeters) return s;
+    for (let t = 0; t <= maxMinutes; t++) {
+      for (let i = 0; i < tissues.length; i++) {
+        const { a, b } = compartments[i];
+        if (tissues[i] > getAllowedPressure(a, b, surfaceReference, gfLow)) {
+          return t;
+        }
+      }
+      tissues = stepCompartments(tissues, inspiredPressure, 1);
+    }
+    return Infinity;
   }
-  return maxSeconds;
-}
 
-// True if any compartment's tissue pressure exceeds its surface M-value —
-// the final safety check at the moment the diver reaches 0m. The threshold
-// is total ambient pressure at the surface, not nitrox-scaled — see
-// computeNDL's comment for why.
-export function hasSurfacingViolation(pTissues, altitudeMeters = 0) {
-  const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
-  return pTissues.some((pTissue, i) => {
-    const { a, b } = COMPARTMENTS[i];
-    return pTissue > mValue(surfaceReference, a, b);
-  });
+  // The controlling (deepest) mandatory decompression stop across all
+  // compartments, rounded up to the next ceilingRoundingMeters increment —
+  // the depth actually displayed and enforced, as opposed to the raw
+  // unrounded `ceilingDepth`.
+  function computeCeiling(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters = 0, debugLabel) {
+    const { maxCeilingP, controllingCompartmentIndex } =
+      maxCeilingPressureWithGF(pTissues, currentDepthMeters, gfLow, gfHigh, altitudeMeters, debugLabel);
+    const rawDepth = Math.max(0, (maxCeilingP - surfacePressureAtAltitude(altitudeMeters)) * 10);
+    const ceilingDepthRounded = rawDepth <= 0 ? 0 : Math.ceil(rawDepth / ceilingRoundingMeters) * ceilingRoundingMeters;
+    if (debugLabel) {
+      console.log(`  => rounded controlling ceiling = ${ceilingDepthRounded}m (raw ${rawDepth.toFixed(2)}m)`);
+    }
+    return { ceilingDepth: ceilingDepthRounded, controllingCompartmentIndex };
+  }
+
+  // Seconds the diver must remain at heldDepthMeters before computeCeiling
+  // would newly report a shallower rounded stop (0 if already clear to
+  // ascend further). GF_now is re-derived each step from the evolving
+  // tissue state, held at the constant heldDepthMeters. Steps forward in
+  // 1-second increments for precision.
+  function computeDecoStopSeconds(pTissues, heldDepthMeters, gfLow, gfHigh, nitroxPercent = 21, altitudeMeters = 0, maxSeconds = 3600) {
+    const pAmb = ambientPressureAtDepth(heldDepthMeters, altitudeMeters);
+    const inspiredPressure = inspiredInertGasPressure(pAmb, nitroxPercent);
+    let tissues = pTissues.slice();
+
+    if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh, altitudeMeters).ceilingDepth < heldDepthMeters) return 0;
+
+    for (let s = 1; s <= maxSeconds; s++) {
+      tissues = stepCompartments(tissues, inspiredPressure, 1 / 60);
+      if (computeCeiling(tissues, heldDepthMeters, gfLow, gfHigh, altitudeMeters).ceilingDepth < heldDepthMeters) return s;
+    }
+    return maxSeconds;
+  }
+
+  // True if any compartment's tissue pressure exceeds its surface M-value —
+  // the final safety check at the moment the diver reaches 0m. The
+  // threshold is total ambient pressure at the surface, not nitrox-scaled —
+  // see computeNDL's comment for why.
+  function hasSurfacingViolation(pTissues, altitudeMeters = 0) {
+    const surfaceReference = surfacePressureAtAltitude(altitudeMeters);
+    return pTissues.some((pTissue, i) => {
+      const { a, b } = compartments[i];
+      return pTissue > mValue(surfaceReference, a, b);
+    });
+  }
+
+  return {
+    createCompartments,
+    stepCompartments,
+    computeNDL,
+    computeCeiling,
+    ceilingDepth,
+    computeDecoStopSeconds,
+    hasSurfacingViolation,
+  };
 }

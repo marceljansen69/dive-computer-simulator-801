@@ -3,17 +3,12 @@
 // has no DOM dependency.)
 
 import {
-  createCompartments,
-  stepCompartments,
+  createEngine,
+  COMPARTMENTS,
   ambientPressureAtDepth,
   mValue,
   getAllowedPressure,
   computeGFNow,
-  computeNDL,
-  ceilingDepth,
-  computeCeiling,
-  computeDecoStopSeconds,
-  hasSurfacingViolation,
   surfacePressureAtAltitude,
   n2Fraction,
   inspiredInertGasPressure,
@@ -25,6 +20,19 @@ import {
 // below that predates gradient factors now passes gfLow=gfHigh=1 and keeps
 // its original expected numbers unchanged.
 const GF_100 = 1;
+
+// Tests exercise the default compartment table via the same createEngine
+// factory ui.js uses — proves the parameterization didn't change any
+// default-profile behavior, since these are the exact same functions/table.
+const {
+  createCompartments,
+  stepCompartments,
+  computeNDL,
+  ceilingDepth,
+  computeCeiling,
+  computeDecoStopSeconds,
+  hasSurfacingViolation,
+} = createEngine(COMPARTMENTS);
 
 let passed = 0;
 let failed = 0;
