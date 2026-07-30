@@ -87,7 +87,7 @@ const state = {
   // See PHASE_CONFIG for what each phase shows/allows.
   phase: 'planning-dive',
 
-  simSpeed: 1,
+  simSpeed: 20,
   simStartReal: 0,       // performance.now() at (re)start
   simElapsedAtStart: 0,  // simulated minutes already elapsed when (re)started
   lastWholeMinute: -1,   // last integer minute the engine has processed
