@@ -457,7 +457,11 @@ body {
        inflating controls-panel/log-box far past their actual content
        and eating into the bars-panel row. A capped range bounds it to
        what the controls box actually needs. */
-    grid-template-rows: minmax(260px, 45vh) minmax(150px, 190px) 1fr;
+    /* Row 1's cap lowered from 45vh/260px so the profile graph gives up
+       space to the compartment-loading row (row 3, 1fr) below -- brings
+       row 3 to roughly 150% of its previous height on typical desktop
+       screens. */
+    grid-template-rows: minmax(230px, 30vh) minmax(150px, 190px) 1fr;
     height: 100vh;
   }
 
@@ -465,6 +469,8 @@ body {
     grid-column: 1;
     grid-row: 1 / span 2;
     order: initial;
+    /* Matches row 1's new floor above (the base rule's 260px is for mobile). */
+    min-height: 230px;
   }
 
   #display-panel {
