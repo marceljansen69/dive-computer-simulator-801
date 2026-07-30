@@ -742,8 +742,8 @@ function updateDisplay(snapshot) {
     // them apply at a fixed 0m surface interval, so they're simply not
     // shown (the underlying state/logic that drives them is unmodified,
     // per spec — this only changes what gets displayed).
-    ndlLabelEl.textContent = 'Surface Time';
-    ndlValueEl.textContent = formatTime(snapshot.minutes);
+    ndlLabelEl.textContent = '';
+    ndlValueEl.textContent = '';
     ndlValueEl.classList.remove('blink-error', 'compact-value');
   } else if (snapshot.errorTriggered) {
     ndlLabelEl.textContent = '';
