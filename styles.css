@@ -139,6 +139,11 @@ body {
   right: 11.57%;
   bottom: 10.85%;
   left: 14.85%;
+  /* Lets descendants size text/icons in cqw (% of THIS box's own width --
+     the screen area itself, which is what the cqw percentages below were
+     measured against) instead of fixed px, so they grow/shrink whenever the
+     display resizes rather than staying frozen at one box size. */
+  container-type: inline-size;
   font-family: 'Segoe UI', Arial, sans-serif;
   color: var(--display-value);
 }
@@ -252,7 +257,7 @@ body {
 
 .readout .label,
 .selector .label {
-  font-size: 8px;
+  font-size: 3.9cqw;
   color: var(--display-blue);
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -261,14 +266,14 @@ body {
 
 #depth-readout .value,
 #ndl-readout .value {
-  font-size: 30px;
+  font-size: 14.5cqw;
   font-weight: bold;
   line-height: 1;
   white-space: nowrap;
 }
 
 #dive-time-readout .value {
-  font-size: 17px;
+  font-size: 8.2cqw;
   font-weight: bold;
   white-space: nowrap;
 }
@@ -296,17 +301,17 @@ body {
 .icon-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 2.4cqw;
 }
 
 .selector .value {
-  font-size: 12px;
+  font-size: 5.8cqw;
   font-weight: bold;
   white-space: nowrap;
 }
 
 #altitude-selector .value {
-  font-size: 7px;
+  font-size: 3.4cqw;
   font-weight: normal;
   color: var(--display-blue);
 }
@@ -315,7 +320,7 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  height: 18px;
+  height: 8.7cqw;
 }
 
 .arrow-col button {
@@ -325,8 +330,8 @@ body {
   cursor: pointer;
   width: 0;
   height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
+  border-left: 2.4cqw solid transparent;
+  border-right: 2.4cqw solid transparent;
   opacity: 0.9;
 }
 
@@ -335,11 +340,11 @@ body {
 }
 
 .arrow-col button:first-child {
-  border-bottom: 5px solid var(--display-value);
+  border-bottom: 2.4cqw solid var(--display-value);
 }
 
 .arrow-col button:last-child {
-  border-top: 5px solid var(--display-value);
+  border-top: 2.4cqw solid var(--display-value);
 }
 
 .arrow-col button:hover:first-child {
@@ -351,8 +356,8 @@ body {
 }
 
 .icon {
-  width: 16px;
-  height: 10px;
+  width: 7.7cqw;
+  height: 4.8cqw;
 }
 
 .sim-controls {
