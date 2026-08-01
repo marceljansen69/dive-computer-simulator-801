@@ -363,7 +363,7 @@ function drawProfile() {
   }
 
   // profile line
-  profileCtx.strokeStyle = '#37e6c4';
+  profileCtx.strokeStyle = '#008ef5';
   profileCtx.lineWidth = 2;
   profileCtx.beginPath();
   state.waypoints.forEach((wp, i) => {
@@ -378,7 +378,7 @@ function drawProfile() {
   state.waypoints.forEach((wp) => {
     const x = timeToX(wp.t);
     const y = depthToY(wp.d);
-    profileCtx.fillStyle = isWaypointLocked(wp) ? '#5f7d8f' : '#37e6c4';
+    profileCtx.fillStyle = isWaypointLocked(wp) ? '#5f7d8f' : '#008ef5';
     profileCtx.beginPath();
     profileCtx.arc(x, y, 5, 0, Math.PI * 2);
     profileCtx.fill();

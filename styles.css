@@ -5,7 +5,7 @@
   --text-main: #cdeeff;
   --text-dim: #5f7d8f;
   --accent: #37e6c4;
-  --green: #2fd06a;
+  --green: #008ef5;
   --amber: #e8b93a;
   --red: #e5484d;
   --mvalue-safe: #0a2a4a;
@@ -118,7 +118,7 @@ body {
   width: 100%;
   max-width: 360px;
   aspect-ratio: 1158 / 940;
-  background-image: url('dive-computer-display-bg.jpg');
+  background-image: url('dive-computer-display-bg.png');
   background-size: 100% 100%;
   background-repeat: no-repeat;
   border-radius: 8%;
@@ -363,8 +363,8 @@ body {
 }
 
 #start-btn {
-  background: var(--accent);
-  color: #05080c;
+  background: var(--display-blue);
+  color: #fff;
   border: none;
   border-radius: 4px;
   padding: 8px 16px;
@@ -385,8 +385,8 @@ body {
 
 #reset-btn {
   background: none;
-  color: var(--text-dim);
-  border: 1px solid var(--panel-border);
+  color: var(--display-blue);
+  border: 1px solid var(--display-blue);
   border-radius: 4px;
   padding: 8px 16px;
   font-family: inherit;
@@ -396,8 +396,9 @@ body {
 }
 
 #reset-btn:hover {
-  border-color: var(--text-main);
-  color: var(--text-main);
+  border-color: var(--display-blue);
+  color: #fff;
+  background: var(--display-blue);
 }
 
 /* Smaller/secondary sizing while a run is actively in progress (diving or
