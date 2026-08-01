@@ -18,62 +18,70 @@
   </section>
 
   <section id="display-panel" class="panel">
-    <div id="ascent-bar" title="Ascent rate">
-      <div class="ascent-box" data-level="9"></div>
-      <div class="ascent-box" data-level="8"></div>
-      <div class="ascent-box" data-level="7"></div>
-      <div class="ascent-box" data-level="6"></div>
-      <div class="ascent-box" data-level="5"></div>
-      <div class="ascent-box" data-level="4"></div>
-      <div class="ascent-box" data-level="3"></div>
-      <div class="ascent-box" data-level="2"></div>
-      <div class="ascent-box" data-level="1"></div>
-    </div>
-
     <div class="display-main">
-      <div class="display-readouts">
-        <div class="readout">
-          <div class="label">Depth (m)</div>
-          <div class="value" id="depth-value">0.0</div>
+      <div class="display-content">
+        <div class="readout" id="depth-readout">
+          <div class="label">Depth</div>
+          <div class="value" id="depth-value">0.0<span class="unit">m</span></div>
         </div>
-        <div class="readout">
+        <div class="v-divider"></div>
+        <div class="readout" id="ndl-readout">
+          <div class="label" id="ndl-label">NDL</div>
+          <div class="value" id="ndl-value">--</div>
+        </div>
+
+        <div class="h-divider"></div>
+
+        <div id="ascent-bar" title="Ascent rate">
+          <div class="ascent-box" data-level="9"></div>
+          <div class="ascent-box" data-level="8"></div>
+          <div class="ascent-box" data-level="7"></div>
+          <div class="ascent-box" data-level="6"></div>
+          <div class="ascent-box" data-level="5"></div>
+          <div class="ascent-box" data-level="4"></div>
+          <div class="ascent-box" data-level="3"></div>
+          <div class="ascent-box" data-level="2"></div>
+          <div class="ascent-box" data-level="1"></div>
+        </div>
+
+        <div class="readout readout-compact" id="dive-time-readout">
           <div class="label">Dive Time</div>
           <div class="value" id="time-value">00:00</div>
         </div>
-        <div class="readout">
-          <div class="label" id="ndl-label">NDL (min)</div>
-          <div class="value" id="ndl-value">--</div>
-        </div>
-      </div>
 
-      <div class="selectors">
+        <div class="selector" id="gf-selector">
+          <div class="label">Gradient</div>
+          <div class="value" id="gf-value">45/95</div>
+          <div class="icon-row">
+            <svg class="icon" id="gf-icon" viewBox="0 0 34 20"></svg>
+            <div class="arrow-col">
+              <button id="gf-up">&#9650;</button>
+              <button id="gf-down">&#9660;</button>
+            </div>
+          </div>
+        </div>
+
         <div class="selector" id="nitrox-selector">
-          <div class="label">Nitrox %</div>
-          <div class="arrow-row">
-            <button id="nitrox-down">&#9660;</button>
+          <div class="label">Nitrox</div>
+          <div class="icon-row">
             <div class="value" id="nitrox-value">21</div>
-            <button id="nitrox-up">&#9650;</button>
+            <div class="arrow-col">
+              <button id="nitrox-up">&#9650;</button>
+              <button id="nitrox-down">&#9660;</button>
+            </div>
           </div>
         </div>
 
         <div class="selector" id="altitude-selector">
           <div class="label">Altitude</div>
-          <div class="arrow-row">
-            <button id="altitude-down">&#9660;</button>
+          <div class="icon-row">
             <svg class="icon" id="altitude-icon" viewBox="0 0 34 20"></svg>
-            <button id="altitude-up">&#9650;</button>
+            <div class="arrow-col">
+              <button id="altitude-up">&#9650;</button>
+              <button id="altitude-down">&#9660;</button>
+            </div>
           </div>
           <div class="value" id="altitude-value">0 m</div>
-        </div>
-
-        <div class="selector" id="gf-selector">
-          <div class="label">GF Lo/Hi</div>
-          <div class="arrow-row">
-            <button id="gf-down">&#9660;</button>
-            <svg class="icon" id="gf-icon" viewBox="0 0 34 20"></svg>
-            <button id="gf-up">&#9650;</button>
-          </div>
-          <div class="value" id="gf-value">45/95</div>
         </div>
       </div>
     </div>

@@ -10,6 +10,8 @@
   --red: #e5484d;
   --mvalue-safe: #0a2a4a;
   --mvalue-unsafe: #bcdfff;
+  --display-blue: #008ef5;
+  --display-value: #ffffff;
 }
 
 * {
@@ -104,34 +106,100 @@ body {
 
 #display-panel {
   display: flex;
-  flex-direction: row;
-  gap: 10px;
+  justify-content: center;
 }
 
+/* The device bezel photo dictates the box's proportions (rather than being
+   stretched to fit an externally-imposed box) -- width is set per
+   breakpoint below, height always follows via aspect-ratio, so the photo
+   is never distorted. */
 .display-main {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 1158 / 940;
+  background-image: url('dive-computer-display-bg.jpg');
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  border-radius: 8%;
+  overflow: hidden;
+}
+
+/* Positioned to land exactly on the photographed screen's dark rectangle,
+   measured directly from the source photo (inset % of the bezel crop's own
+   width/height on each side) -- inset (not padding) so top/bottom resolve
+   against height and left/right against width, keeping this aligned
+   correctly across every breakpoint's box shape. Every child below is
+   itself absolutely positioned within this box, using percentages measured
+   directly from the reference photo (pixel-scanned, not eyeballed) --
+   see the "Re-layout the computer display" plan for the source measurements. */
+.display-content {
+  position: absolute;
+  top: 19.79%;
+  right: 11.57%;
+  bottom: 10.85%;
+  left: 14.85%;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: var(--display-value);
+}
+
+.readout,
+.selector {
+  position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
+  text-align: left;
+}
+
+#depth-readout {
+  left: 6%;
+  top: 8%;
+  width: 36%;
+}
+
+#ndl-readout {
+  left: 49%;
+  top: 8%;
+  width: 20%;
+}
+
+.v-divider {
+  position: absolute;
+  left: 41.8%;
+  top: 0;
+  width: 0.8%;
+  height: 43.3%;
+  background: var(--display-blue);
+}
+
+.h-divider {
+  position: absolute;
+  left: 2.3%;
+  top: 43.3%;
+  width: 90.2%;
+  height: 0.9%;
+  background: var(--display-blue);
 }
 
 /* ---------- Ascent rate bar ---------- */
 
 #ascent-bar {
+  position: absolute;
+  left: 4.2%;
+  top: 48.8%;
+  width: 4.6%;
+  height: 33.7%;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  width: 26px;
-  flex-shrink: 0;
+  gap: 6%;
 }
 
 .ascent-box {
   flex: 1;
-  min-height: 8px;
+  min-height: 0;
   border-radius: 2px;
-  background: var(--bg);
-  border: 1px solid var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--display-value);
 }
 
 .ascent-box.lit-green {
@@ -149,36 +217,73 @@ body {
   border-color: var(--red);
 }
 
-.display-readouts {
-  display: flex;
+#dive-time-readout {
+  left: 16.5%;
+  top: 47%;
+  width: 36%;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8%;
+}
+
+#gf-selector {
+  left: 73.6%;
+  top: 57%;
+  width: 22%;
+  height: 25%;
   justify-content: space-between;
-  gap: 8px;
 }
 
-.readout {
-  text-align: center;
-  flex: 1;
+#nitrox-selector {
+  left: 16.5%;
+  top: 63%;
+  width: 20%;
+  height: 18%;
+  justify-content: space-between;
 }
 
-.readout .label {
-  font-size: 0.7rem;
-  color: var(--text-dim);
-  letter-spacing: 0.05em;
+#altitude-selector {
+  left: 42.6%;
+  top: 63%;
+  width: 22%;
+  height: 20%;
+  justify-content: space-between;
+}
+
+.readout .label,
+.selector .label {
+  font-size: 8px;
+  color: var(--display-blue);
+  letter-spacing: 0.02em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.readout .value {
-  font-size: 2rem;
+#depth-readout .value,
+#ndl-readout .value {
+  font-size: 30px;
   font-weight: bold;
-  color: var(--accent);
-  line-height: 1.2;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.readout .value.compact-value {
-  font-size: 1.2rem;
+#dive-time-readout .value {
+  font-size: 17px;
+  font-weight: bold;
+  white-space: nowrap;
 }
 
-.readout .value.blink-error {
+.value .unit {
+  font-size: 0.4em;
+  font-weight: normal;
+  margin-left: 1px;
+}
+
+.value.compact-value {
+  font-size: 0.6em;
+}
+
+.value.blink-error {
   color: var(--red);
   animation: blink-error 1s steps(1, start) infinite;
 }
@@ -188,62 +293,66 @@ body {
   50%, 100% { opacity: 0; }
 }
 
-.selectors {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.selector {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  background: #060b10;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  padding: 6px 4px;
-}
-
-.selector .label {
-  font-size: 0.65rem;
-  color: var(--text-dim);
-  text-transform: uppercase;
-}
-
-.selector .arrow-row {
+.icon-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.selector button {
-  background: none;
-  border: 1px solid var(--panel-border);
-  color: var(--text-main);
-  font-family: inherit;
-  font-size: 0.9rem;
-  width: 22px;
-  height: 22px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.selector button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  gap: 5px;
 }
 
 .selector .value {
-  font-size: 1rem;
-  min-width: 3.5em;
-  text-align: center;
+  font-size: 12px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+#altitude-selector .value {
+  font-size: 7px;
+  font-weight: normal;
+  color: var(--display-blue);
+}
+
+.arrow-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 18px;
+}
+
+.arrow-col button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  opacity: 0.9;
+}
+
+.arrow-col button:hover {
+  opacity: 1;
+}
+
+.arrow-col button:first-child {
+  border-bottom: 5px solid var(--display-value);
+}
+
+.arrow-col button:last-child {
+  border-top: 5px solid var(--display-value);
+}
+
+.arrow-col button:hover:first-child {
+  border-bottom-color: var(--display-blue);
+}
+
+.arrow-col button:hover:last-child {
+  border-top-color: var(--display-blue);
 }
 
 .icon {
-  width: 34px;
-  height: 20px;
+  width: 16px;
+  height: 10px;
 }
 
 .sim-controls {
@@ -483,14 +592,21 @@ body {
     align-self: center;
   }
 
-  /* Hugs its own content instead of being stretched tall by #display-panel's
-     grid row -- the added margin is the "more top/bottom margin" requested,
-     bringing the box to roughly 150% of its bare content height. #ascent-bar
-     stays on the default flex `align-items: stretch` (see #display-panel's
-     base rule), so it matches this height automatically. */
+  /* A fixed width (height still follows via the base rule's aspect-ratio)
+     keeps the box compact rather than stretching to fill the tall row
+     shared with the profile graph -- centered in the leftover vertical
+     space. #ascent-bar stays on the default flex `align-items: stretch`
+     (see #display-panel's base rule), so it matches this height
+     automatically. */
   .display-main {
-    align-self: flex-start;
-    margin: 32px 0;
+    align-self: center;
+    /* #ascent-bar now lives inside .display-content instead of being a
+       separate flex sibling, so this can use the row's full available
+       height (unlike the 260px used in the first pass, sized to match
+       ascent-bar's old outer position) without affecting the 100vh budget. */
+    width: 282px;
+    max-width: 282px;
+    margin: 0;
   }
 
   #controls-panel {

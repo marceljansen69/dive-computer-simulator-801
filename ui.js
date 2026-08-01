@@ -543,12 +543,14 @@ window.addEventListener('resize', resizeBarsCanvas);
 
 function drawAltitudeIcon() {
   const level = state.altitudeIndex;
-  let svg = '<line x1="0" y1="18" x2="34" y2="18" stroke="#cdeeff" stroke-width="2"/>';
+  // Solid filled mountain silhouette (not outlined) to match the reference
+  // display's icon style — level still controls how many peaks show.
+  let svg = '<polygon points="1,18 12,4 23,18" fill="#ffffff"/>';
   if (level >= 1) {
-    svg += '<polygon points="10,18 17,8 24,18" fill="none" stroke="#cdeeff" stroke-width="1.5"/>';
+    svg += '<polygon points="12,18 21,7 30,18" fill="#ffffff"/>';
   }
   if (level >= 2) {
-    svg += '<polygon points="4,18 17,2 30,18" fill="none" stroke="#37e6c4" stroke-width="1.5"/>';
+    svg += '<polygon points="4,18 17,2 30,18" fill="#008ef5" fill-opacity="0.85"/>';
   }
   altitudeIconEl.innerHTML = svg;
 }
@@ -560,8 +562,8 @@ function drawGfIcon() {
   // so the least-conservative preset (1 bar) highlights the lowest bar.
   for (let i = 0; i < 3; i++) {
     const y = 2 + i * 6;
-    const color = i >= 3 - lit ? '#37e6c4' : '#1c2833';
-    svg += `<rect x="0" y="${y}" width="34" height="4" fill="${color}" />`;
+    const color = i >= 3 - lit ? '#008ef5' : '#ffffff';
+    svg += `<rect x="0" y="${y}" width="34" height="4" rx="2" fill="${color}" />`;
   }
   gfIconEl.innerHTML = svg;
 }
@@ -769,7 +771,7 @@ function updateDisplay(snapshot) {
     ndlValueEl.classList.remove('blink-error');
     ndlValueEl.classList.add('compact-value');
   } else {
-    ndlLabelEl.textContent = 'NDL (min)';
+    ndlLabelEl.textContent = 'NDL';
     ndlValueEl.textContent = snapshot.ndl > 99 ? '--' : String(snapshot.ndl);
     ndlValueEl.classList.remove('blink-error', 'compact-value');
   }
