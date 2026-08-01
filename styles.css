@@ -558,56 +558,42 @@ body {
     overflow: hidden;
   }
 
+  /* Four quadrants: dive planning graph + computer display on top, the
+     compartment loading graph + start/reset/notifications on bottom.
+     Row 1's height is the old (row1 + gap + row2) combined -- profile-panel
+     used to span both of those rows, so folding them into one row keeps
+     its height exactly as it was, now that display-panel/controls-panel
+     no longer need a second, separate short row of their own. */
   #app {
     display: grid;
     grid-template-columns: 1.4fr 1fr;
-    /* Row 2 was `auto` -- but profile-panel spans rows 1-2, and whenever
-       row 1's 45vh cap left profile-panel wanting more height than that,
-       the grid dumped the shortfall into row 2 (auto can still grow),
-       inflating controls-panel/log-box far past their actual content
-       and eating into the bars-panel row. A capped range bounds it to
-       what the controls box actually needs. */
-    /* Row 1's cap lowered from 45vh/260px so the profile graph gives up
-       space to the compartment-loading row (row 3, 1fr) below -- brings
-       row 3 to roughly 150% of its previous height on typical desktop
-       screens. */
-    grid-template-rows: minmax(230px, 30vh) minmax(150px, 190px) 1fr;
+    grid-template-rows: minmax(388px, calc(30vh + 198px)) 1fr;
     height: 100vh;
   }
 
   #profile-panel {
     grid-column: 1;
-    grid-row: 1 / span 2;
+    grid-row: 1;
     order: initial;
-    /* Matches row 1's new floor above (the base rule's 260px is for mobile). */
-    min-height: 230px;
+    min-height: 388px;
   }
 
   #display-panel {
     grid-column: 2;
     grid-row: 1;
     order: initial;
-    /* Don't stretch to fill the tall row1 (shared with the profile graph)
-       -- size to its own content+margin instead (see .display-main below)
-       and sit centered in the leftover vertical space. */
-    align-self: center;
   }
 
-  /* A fixed width (height still follows via the base rule's aspect-ratio)
-     keeps the box compact rather than stretching to fill the tall row
-     shared with the profile graph -- centered in the leftover vertical
-     space. #ascent-bar stays on the default flex `align-items: stretch`
-     (see #display-panel's base rule), so it matches this height
-     automatically. */
+  /* Fills the entire quadrant now (no more fixed width/aspect-ratio keeping
+     it small and centered) -- the bezel photo stretches to match via
+     background-size:100% 100% (already set in the base rule), same
+     "scale to fit the space" tradeoff already accepted project-wide rather
+     than letterboxing or cropping it. */
   .display-main {
-    align-self: center;
-    /* #ascent-bar now lives inside .display-content instead of being a
-       separate flex sibling, so this can use the row's full available
-       height (unlike the 260px used in the first pass, sized to match
-       ascent-bar's old outer position) without affecting the 100vh budget. */
-    width: 282px;
-    max-width: 282px;
-    margin: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    aspect-ratio: auto;
   }
 
   #controls-panel {
@@ -616,9 +602,22 @@ body {
     order: initial;
   }
 
+  /* This box is now as tall as the compartment loading graph next to it
+     (row 2's full height) instead of a short fixed row -- let the log grow
+     to fill that instead of leaving dead space below a fixed 5-line box. */
+  #log-box {
+    flex: 1;
+    height: auto;
+  }
+
+  /* Same column as profile-panel now (was col 1/span 2, full width) --
+     matches the dive planning graph's width instead of spanning under both
+     columns. The canvas drawing (drawBars in ui.js) already reads its own
+     live rendered width every frame, so the compartment content rescales
+     to the narrower space with no JS changes needed. */
   #bars-panel {
-    grid-column: 1 / span 2;
-    grid-row: 3;
+    grid-column: 1;
+    grid-row: 2;
     order: initial;
     min-height: 0; /* the mobile min-height would otherwise fight the grid row's own sizing */
   }
